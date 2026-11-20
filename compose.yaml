@@ -1,6 +1,7 @@
 services:
   silo-franchises:
     build: .
+    pull_policy: build
     image: silo-franchises:local
     restart: unless-stopped
     ports:
