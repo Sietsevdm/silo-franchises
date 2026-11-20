@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Silo Franchises</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="top"><a href="/" class="brand"><span aria-hidden="true">S</span> Silo Franchises</a><small>Collection manager</small></header>
+  <main>
+    <section class="intro"><h1>Build a collection.</h1><p>Find a franchise, pair it with a poster, and add it to your Silo library.</p></section>
+    <div class="workspace">
+      <section class="panel browse" aria-labelledby="browse-title">
+        <h2 id="browse-title">Franchises</h2>
+        <div class="tabs" aria-label="Collection source">
+          <button type="button" data-provider="tmdb" aria-pressed="true">TMDb movies</button>
+          <button type="button" data-provider="tvdb" aria-pressed="false">TheTVDB lists</button>
+        </div>
+        <form id="franchise-form" class="search"><input id="franchise-query" type="search" aria-label="Search franchises" placeholder="Search franchises"><button>Search</button></form>
+        <p id="franchise-status" role="status"></p>
+        <div id="franchises" class="franchises"></div>
+        <button id="more-franchises" type="button" hidden>Load more franchises</button>
+      </section>
+      <section class="panel work" aria-labelledby="selection-title">
+        <h2 id="selection-title">Your collection</h2>
+        <p id="selection-empty">Select a franchise to get started.</p>
+        <div id="selection" hidden>
+          <div class="line"><p id="detail-status" role="status"></p><a id="source-link" target="_blank" rel="noopener">View source</a></div>
+          <label class="field">Collection name<input id="collection-title" maxlength="150"></label>
+          <fieldset><legend>Silo libraries</legend><div id="libraries"></div><p id="library-status" role="status"></p></fieldset>
+          <button id="preview" type="button">Preview library matches</button>
+          <p id="match-status" role="status"></p>
+          <div id="matches" class="matches"></div>
+          <div class="line"><button id="choose-poster" type="button">Choose a poster</button><span id="poster-label">No poster selected</span></div>
+          <div id="chosen-poster"></div>
+          <div class="publish"><button class="accent" id="publish" type="button" disabled>Add to Silo</button><p id="publish-status" role="status"></p></div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <dialog id="poster-dialog" aria-labelledby="poster-title">
+    <header class="line"><div><h2 id="poster-title">Choose a poster</h2><a id="gallery-link" target="_blank" rel="noopener">RedHeadJedi on ThePosterDB</a></div><button id="close-posters" type="button">Close</button></header>
+    <form id="poster-form" class="search"><input id="poster-query" type="search" aria-label="Search posters" placeholder="Search poster titles"><button>Search</button><button id="all-posters" type="button">All posters</button></form>
+    <p id="poster-status" role="status"></p>
+    <div id="posters" class="posters"></div>
+    <button id="more-posters" type="button" hidden>Load more posters</button>
+  </dialog>
+</body>
+</html>
