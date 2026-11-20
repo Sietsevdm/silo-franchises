@@ -16,8 +16,15 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     init: true
+    networks:
+      - default
+      - proxy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+networks:
+  proxy:
+    external: true
