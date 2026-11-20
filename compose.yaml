@@ -1,0 +1,22 @@
+services:
+  silo-franchises:
+    build: .
+    image: silo-franchises:local
+    restart: unless-stopped
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8088}:8080"
+    environment:
+      APP_USER: "${APP_USER:-admin}"
+      APP_PASSWORD: "${APP_PASSWORD:?Set APP_PASSWORD}"
+      SILO_URL: "${SILO_URL:-https://thevault.box74.appboxmanager.xyz}"
+      SILO_API_KEY: "${SILO_API_KEY:?Set SILO_API_KEY}"
+      TMDB_READ_TOKEN: "${TMDB_READ_TOKEN:?Set TMDB_READ_TOKEN}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
