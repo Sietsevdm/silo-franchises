@@ -4,5 +4,6 @@
 !providers.mjs
 !silo.mjs
 !remote-artwork.mjs
+!poster-cache.mjs
 !public/
 !public/**
