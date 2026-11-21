@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, bytes, normalize, request } from './providers.mjs';
+import { downloadPublicArtwork } from './remote-artwork.mjs';
 
 export function matchMembers(members, catalog) {
   const byId = new Map();
@@ -152,16 +153,17 @@ export function siloClient(base, token) {
   const collectionPath = (id) => `${collectionsPath}/${encodeURIComponent(id)}`;
   const getCollection = (id) => call(collectionPath(id), { withTag: true });
 
-  async function prepareArtwork(url, label) {
-    const image = await bytes(await request(url, {}, label));
+  async function prepareArtwork(url, label, custom = false) {
+    const image = custom ? await downloadPublicArtwork(url) : await bytes(await request(url, {}, label));
     const [mime, extension] = imageType(image);
     const form = new FormData();
     form.append('image', new Blob([image], { type: mime }), `artwork.${extension}`);
     return form;
   }
 
-  async function updateCollection({ id, title, description, poster, etag, members = [] }) {
+  async function updateCollection({ id, title, description, poster, etag, members = [], backdrop, customBackdrop = false }) {
     const form = poster ? await prepareArtwork(poster.image, 'ThePosterDB artwork') : null;
+    const backdropForm = backdrop ? await prepareArtwork(backdrop, 'Backdrop', customBackdrop) : null;
     const current = await getCollection(id);
     if (!current.etag || current.etag !== etag) {
       throw new AppError(412, 'This collection changed in Silo. Reopen it before saving.');
@@ -201,17 +203,22 @@ export function siloClient(base, token) {
       try { await call(path + '/poster', { method: 'PUT', body: form }); }
       catch (error) { throw new AppError(error.status ?? 502, 'Title and description were saved, but the poster upload failed. Reopen the collection and retry the poster.'); }
     }
+    if (backdropForm) {
+      try { await call(path + '/backdrop', { method: 'PUT', body: backdropForm }); }
+      catch (error) { throw new AppError(error.status ?? 502, 'Collection details were saved, but the backdrop upload failed. Reopen the collection and retry.'); }
+    }
     return members.length ? { ...updated, added: additions.length } : updated;
   }
   const active = new Set();
-  async function publish({ detail, title, libraryIds, members, poster, description, backdrop }) {
-    const identity = JSON.stringify([detail.provider, detail.id, normalize(title), [...libraryIds].sort()]);
+  async function publish({ detail, title, libraryIds, members, poster, description, backdrop, customBackdrop = false, sync = false }) {
+    const identity = JSON.stringify([detail.provider, detail.id, normalize(title), [...libraryIds].sort(), ...(sync ? ['sync'] : [])]);
     const slug = 'franchise-' + createHash('sha256').update(identity).digest('hex').slice(0, 24);
     if (active.has(slug)) throw new AppError(409, 'This collection is already being imported.');
     active.add(slug);
     let collection;
     try {
       const form = await prepareArtwork(poster.image, 'ThePosterDB artwork');
+      const customForm = customBackdrop ? await prepareArtwork(backdrop, 'Backdrop', true) : null;
       const existing = await collections();
       collection = existing.find((item) => item.slug === slug && normalize(item.title) === normalize(title));
       if (!collection) {
@@ -219,24 +226,37 @@ export function siloClient(base, token) {
           (item.library_ids?.length ? item.library_ids : [item.library_id]).some((id) => libraryIds.includes(id)))) {
           throw new AppError(409, 'A collection with this name already exists in a selected library. Choose a different title.');
         }
+        const syncedSource = sync ? { collection_type: 'tmdb', source_url: `tmdb://collection/${detail.id}`,
+          source_config: { mode: 'tmdb_collection', collection_id: Number(detail.id) }, sync_schedule: '0 4 * * *' } : null;
         collection = await call(collectionsPath, { method: 'POST', body: {
           title, slug, library_ids: libraryIds, collection_type: 'manual', source_url: detail.url, description,
+          ...syncedSource,
         } });
       }
       if (!collection?.id) throw new AppError(502, 'Silo did not return the new collection ID.');
       const path = collectionPath(collection.id);
-      for (const [position, item] of members.entries()) {
-        await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position } });
+      if (!sync) {
+        for (const [position, item] of members.entries()) {
+          await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position } });
+        }
       }
       await call(path + '/poster', { method: 'PUT', body: form });
       let warning;
       if (backdrop) {
         try {
-          const wideArtwork = await prepareArtwork(backdrop, 'TMDb backdrop');
+          const wideArtwork = customForm ?? await prepareArtwork(backdrop, 'TMDb backdrop');
           await call(path + '/backdrop', { method: 'PUT', body: wideArtwork });
-        } catch { warning = 'The collection was saved, but its TMDb backdrop could not be uploaded.'; }
+        } catch { warning = 'The collection was saved, but its backdrop could not be uploaded.'; }
+      }
+      if (sync) {
+        try {
+          const status = await call(path + '/sync', { method: 'POST' });
+          const syncState = status?.sync_run?.status ?? status?.status;
+          if (['failed', 'error'].includes(syncState)) throw new Error('Sync failed');
+        } catch { warning = [warning, 'The TMDb-synced collection was saved, but its first sync failed. Check the TMDb setup in Silo.'].filter(Boolean).join(' '); }
       }
       const result = { id: collection.id, title: collection.title, added: members.length };
+      if (sync) result.synced = true;
       return warning ? { ...result, warning } : result;
     } catch (error) {
       if (collection?.id) {
