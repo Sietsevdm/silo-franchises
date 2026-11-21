@@ -24,9 +24,9 @@ export async function downloadPublicArtwork(value) {
   const url = publicArtworkUrl(value);
   let addresses;
   try { addresses = await lookup(url.hostname, { all: true, family: 4 }); }
-  catch { throw new AppError(422, 'The custom backdrop hostname could not be resolved.'); }
+  catch { throw new AppError(422, 'The custom artwork hostname could not be resolved.'); }
   if (!addresses.length || addresses.some(({ address }) => blocked.check(address, 'ipv4'))) {
-    throw new AppError(400, 'Custom backdrop URLs must resolve to public addresses.');
+    throw new AppError(400, 'Custom artwork URLs must resolve to public addresses.');
   }
   const [{ address, family }] = addresses;
   return new Promise((resolve, reject) => {
@@ -36,7 +36,7 @@ export async function downloadPublicArtwork(value) {
     }, async (response) => {
       if (response.statusCode !== 200) {
         response.destroy();
-        reject(new AppError(422, 'The custom backdrop URL must return an image directly.'));
+        reject(new AppError(422, 'The custom artwork URL must return an image directly.'));
         return;
       }
       const chunks = [];
@@ -44,15 +44,15 @@ export async function downloadPublicArtwork(value) {
       try {
         for await (const chunk of response) {
           size += chunk.length;
-          if (size > 15 * 1024 * 1024) throw new AppError(413, 'The custom backdrop is larger than 15 MB.');
+          if (size > 15 * 1024 * 1024) throw new AppError(413, 'The custom artwork is larger than 15 MB.');
           chunks.push(chunk);
         }
         resolve(Buffer.concat(chunks, size));
       } catch (error) {
-        reject(error instanceof AppError ? error : new AppError(422, 'Could not read the custom backdrop.'));
+        reject(error instanceof AppError ? error : new AppError(422, 'Could not read the custom artwork.'));
       }
     });
-    req.on('error', () => reject(new AppError(422, 'Could not download the custom backdrop over HTTPS.')));
+    req.on('error', () => reject(new AppError(422, 'Could not download the custom artwork over HTTPS.')));
     req.end();
   });
 }
