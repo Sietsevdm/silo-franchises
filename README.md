@@ -24,6 +24,7 @@ To run with Docker Compose from a shell, copy `.env.example` to `.env`, fill in 
 
 - Select a franchise and the libraries to search. The preview matches existing library entries by TMDb, TheTVDB, or IMDb ID, then by unambiguous title and year when available. It shows unmatched titles and lets you deselect matched titles before importing.
 - The **Poster source** menu supports RedHeadJedi, ishalioh, ashlyfxxk, XDM, and mikenobbs. Select one creator or search all five together. Every result shows the creator. The app uploads the optimized JPEG from the selected public gallery to Silo.
+- **Custom poster URL** previews an image from a direct public HTTPS link and selects it for upload. **Sort titles A–Z in Silo** sets the collection's server-side default order. **Hide collections already in Silo** filters the franchise browser while keeping the **In Silo** editor available.
 - The preview shows every selected library that contains each match. For new collections, a library qualifies only when it contains at least two distinct selected titles. A collection can span the qualifying libraries. The same minimum applies to movie and TV imports, including the bulk queue.
 - An import creates a manual Silo server collection with only the selected titles from qualifying libraries. It does not download media, change existing media metadata, or schedule future collection updates.
 - Sort by title on either page or by star count when browsing TheTVDB.
