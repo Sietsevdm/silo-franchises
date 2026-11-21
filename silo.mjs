@@ -18,17 +18,18 @@ export function matchMembers(members, catalog) {
     add(byTitle, `${item.type}:${normalize(item.title)}`, item);
   }
   return members.map((member) => {
+    const libraryIds = (items) => [...new Set(items.flatMap((item) => item.previewLibraryIds ?? []))];
     const exact = new Map();
     for (const provider of Object.keys(fields)) {
       if (!member[provider]) continue;
       for (const local of byId.get(`${member.type}:${provider}:${member[provider]}`) ?? []) exact.set(local.content_id, local);
     }
-    if (exact.size === 1) return { ...member, match: [...exact.values()][0], basis: 'Provider ID' };
-    if (exact.size > 1) return { ...member, basis: 'Ambiguous provider IDs' };
+    if (exact.size === 1) return { ...member, match: [...exact.values()][0], basis: 'Provider ID', libraryIds: libraryIds([...exact.values()]) };
+    if (exact.size > 1) return { ...member, basis: 'Ambiguous provider IDs', libraryIds: libraryIds([...exact.values()]) };
     const names = (byTitle.get(`${member.type}:${normalize(member.title)}`) ?? [])
       .filter((item) => member.year && Number(item.year) === Number(member.year) &&
         Object.entries(fields).every(([provider, field]) => !member[provider] || !item[field] || String(member[provider]) === String(item[field])));
-    if (names.length === 1) return { ...member, match: names[0], basis: 'Title and year' };
+    if (names.length === 1) return { ...member, match: names[0], basis: 'Title and year', libraryIds: libraryIds(names) };
     return { ...member, basis: names.length ? 'Ambiguous title' : 'Missing' };
   });
 }
@@ -124,8 +125,11 @@ export function siloClient(base, token) {
   }
   const catalog = async (ids, type) => {
     const all = new Map();
-    for (const library of ids) {
-      for (const [id, item] of await loadLibrary(library, type)) all.set(id, item);
+    for (const library of new Set(ids)) {
+      for (const [id, item] of await loadLibrary(library, type)) {
+        const previous = all.get(id);
+        all.set(id, { ...item, previewLibraryIds: [...(previous?.previewLibraryIds ?? []), library] });
+      }
     }
     return [...all.values()];
   };
