@@ -206,7 +206,8 @@ export function providers(token) {
     const page = await html(official.url, 'TheTVDB');
     const items = parseTVMembers(page);
     if (!items.length) throw new AppError(502, 'TheTVDB returned no recognizable list members.');
-    return { ...official, items };
+    const description = page.match(/<div\b[^>]*class="change_translation_text"[^>]*data-language="eng"[^>]*>([\s\S]*?)<\/div>/i)?.[1];
+    return { ...official, items, description: decode(description ?? '') };
   });
   const details = cached(async (key) => {
     const [provider, id, kind] = key.split(':');
@@ -232,6 +233,9 @@ export function providers(token) {
     const [provider, id, kind] = key.split(':');
     if (provider === 'tmdb') return (await details(key)).metadata;
     const list = await tvList(id);
+    if (kind === 'series') {
+      return { title: list.title, description: list.description, backdrop: '', url: list.url, kind: 'tvdb' };
+    }
     const candidates = list.items.filter((item) => item.type === kind).slice(0, 4);
     const route = kind === 'movie' ? 'movie' : 'tv';
     for (const candidate of candidates) {
@@ -256,11 +260,49 @@ export function providers(token) {
     }
     return null;
   });
+  const movieImages = cached(async (id) => {
+    const item = await tmdbJson(`/movie/${id}?language=en-US&append_to_response=images&include_image_language=en,null`);
+    const paths = new Set([item.backdrop_path, ...(item.images?.backdrops ?? []).map((image) => image.file_path)]);
+    return [...paths].filter((path) => tmdbArtwork(path)).map((path) => ({
+      path, film: item.title, image: tmdbArtwork(path), thumbnail: tmdbArtwork(path).replace('/w1280/', '/w300/'),
+    }));
+  });
+  const resolveMovieId = cached(async (external) => {
+    const result = await tmdbJson(`/find/${external}?external_source=imdb_id&language=en-US`);
+    return result.movie_results?.length === 1 ? String(result.movie_results[0].id) : null;
+  });
+  const backdrops = cached(async (key) => {
+    const detail = await details(key);
+    const seen = new Set();
+    const items = [];
+    const unavailable = [];
+    for (let i = 0; i < detail.members.length; i += 4) {
+      const batch = detail.members.slice(i, i + 4);
+      const results = await Promise.allSettled(batch.map(async (member) => {
+        const id = member.tmdb || (member.imdb && await resolveMovieId(member.imdb));
+        if (!id) throw new AppError(404, 'No matching TMDb film.');
+        return movieImages(id);
+      }));
+      for (const [index, result] of results.entries()) {
+        if (result.status === 'rejected') {
+          if ([401, 403, 503].includes(result.reason.status)) throw result.reason;
+          unavailable.push(batch[index].title);
+          continue;
+        }
+        for (const image of result.value) {
+          if (seen.has(image.path)) continue;
+          seen.add(image.path);
+          items.push(image);
+        }
+      }
+    }
+    return { items, unavailable };
+  });
   const posterById = async (id, creator) => {
     if (!posterSources.includes(creator)) throw new AppError(400, 'Choose a configured poster source.');
     const seen = seenPosters.get(id);
     if (seen?.creator === creator) return seen;
     return (await posterIndex(creator)).find((poster) => poster.id === id);
   };
-  return { tvIndex, tvList, movieIndex, posterIndex, galleryPage, details, metadata, posterById };
+  return { tvIndex, tvList, movieIndex, posterIndex, galleryPage, details, metadata, posterById, backdrops };
 }
