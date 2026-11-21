@@ -52,6 +52,16 @@
             <p id="metadata-status" role="status"></p>
             <a id="metadata-source" target="_blank" rel="noopener" hidden></a>
             <label id="backdrop-field" hidden><input id="include-backdrop" type="checkbox" checked> Add TMDb backdrop to Silo</label>
+            <div id="tv-backdrop-tools" hidden>
+              <label class="field">Backdrop URL <input id="tv-backdrop-url" type="url" maxlength="2048" placeholder="https://…"></label>
+              <p class="field-note">Optional. Use a direct link to a public HTTPS image.</p>
+            </div>
+            <div id="movie-backdrop-tools" hidden>
+              <button type="button" id="load-backdrops">Browse movie backdrops</button>
+              <p id="backdrop-status" role="status"></p>
+              <div id="backdrop-options" class="backdrop-options"></div>
+              <button type="button" id="more-backdrops" hidden>Show more backdrops</button>
+            </div>
           </div>
           <div id="membership">
             <fieldset><legend>Silo libraries</legend><div id="libraries"></div><p id="library-status" role="status"></p></fieldset>
@@ -59,6 +69,8 @@
             <p id="match-status" role="status"></p>
             <p id="library-eligibility" role="status"></p>
             <div id="matches" class="matches"></div>
+            <label id="sync-field" hidden><input id="sync-tmdb" type="checkbox"> Keep collection synced with TMDb</label>
+            <p id="sync-note" class="field-note" hidden>Silo follows the full TMDb collection and syncs daily. Individual title selection applies to manual collections.</p>
           </div>
           <div class="publish"><button class="accent" id="publish" type="button" disabled>Add to Silo</button> <button id="queue-current" type="button" disabled>Save to bulk queue</button><p id="publish-status" role="status"></p></div>
         </div>
