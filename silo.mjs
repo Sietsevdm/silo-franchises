@@ -135,16 +135,16 @@ export function siloClient(base, token) {
   const collectionPath = (id) => `${collectionsPath}/${encodeURIComponent(id)}`;
   const getCollection = (id) => call(collectionPath(id), { withTag: true });
 
-  async function preparePoster(poster) {
-    const image = await bytes(await request(poster.image, {}, 'ThePosterDB artwork'));
+  async function prepareArtwork(url, label) {
+    const image = await bytes(await request(url, {}, label));
     const [mime, extension] = imageType(image);
     const form = new FormData();
-    form.append('image', new Blob([image], { type: mime }), `poster.${extension}`);
+    form.append('image', new Blob([image], { type: mime }), `artwork.${extension}`);
     return form;
   }
 
   async function updateCollection({ id, title, description, poster, etag }) {
-    const form = poster ? await preparePoster(poster) : null;
+    const form = poster ? await prepareArtwork(poster.image, 'ThePosterDB artwork') : null;
     const current = await getCollection(id);
     if (!current.etag || current.etag !== etag) {
       throw new AppError(412, 'This collection changed in Silo. Reopen it before saving.');
@@ -158,14 +158,14 @@ export function siloClient(base, token) {
     return updated;
   }
   const active = new Set();
-  async function publish({ detail, title, libraryIds, members, poster }) {
+  async function publish({ detail, title, libraryIds, members, poster, description, backdrop }) {
     const identity = JSON.stringify([detail.provider, detail.id, normalize(title), [...libraryIds].sort()]);
     const slug = 'franchise-' + createHash('sha256').update(identity).digest('hex').slice(0, 24);
     if (active.has(slug)) throw new AppError(409, 'This collection is already being imported.');
     active.add(slug);
     let collection;
     try {
-      const form = await preparePoster(poster);
+      const form = await prepareArtwork(poster.image, 'ThePosterDB artwork');
       const existing = await collections();
       collection = existing.find((item) => item.slug === slug && normalize(item.title) === normalize(title));
       if (!collection) {
@@ -174,7 +174,7 @@ export function siloClient(base, token) {
           throw new AppError(409, 'A collection with this name already exists in a selected library. Choose a different title.');
         }
         collection = await call(collectionsPath, { method: 'POST', body: {
-          title, slug, library_ids: libraryIds, collection_type: 'manual', source_url: detail.url,
+          title, slug, library_ids: libraryIds, collection_type: 'manual', source_url: detail.url, description,
         } });
       }
       if (!collection?.id) throw new AppError(502, 'Silo did not return the new collection ID.');
@@ -183,7 +183,15 @@ export function siloClient(base, token) {
         await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position } });
       }
       await call(path + '/poster', { method: 'PUT', body: form });
-      return { id: collection.id, title: collection.title, added: members.length };
+      let warning;
+      if (backdrop) {
+        try {
+          const wideArtwork = await prepareArtwork(backdrop, 'TMDb backdrop');
+          await call(path + '/backdrop', { method: 'PUT', body: wideArtwork });
+        } catch { warning = 'The collection was saved, but its TMDb backdrop could not be uploaded.'; }
+      }
+      const result = { id: collection.id, title: collection.title, added: members.length };
+      return warning ? { ...result, warning } : result;
     } catch (error) {
       if (collection?.id) {
         throw new AppError(error.status ?? 502, `Silo collection ${collection.id} exists. ${error instanceof AppError ? error.message : 'Import was interrupted.'} Retry with the same title and libraries to resume.`);
