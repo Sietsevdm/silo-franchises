@@ -53,12 +53,20 @@
         <h2 id="poster-title">Poster</h2>
         <div id="chosen-poster"></div><p id="poster-label">No poster selected</p>
         <div id="poster-tools" hidden>
-          <form id="poster-form" class="search"><input id="poster-query" type="search" aria-label="Search posters" placeholder="Search RedHeadJedi posters"><button>Search</button><button id="all-posters" type="button">Browse all</button></form>
+          <label class="field">Poster source<select id="poster-source">
+            <option value="all">All creators</option>
+            <option value="RedHeadJedi" selected>RedHeadJedi</option>
+            <option value="ishalioh">ishalioh</option>
+            <option value="ashlyfxxk">ashlyfxxk</option>
+            <option value="XDM">XDM</option>
+            <option value="mikenobbs">mikenobbs</option>
+          </select></label>
+          <form id="poster-form" class="search"><input id="poster-query" type="search" aria-label="Search posters" placeholder="Search collection posters"><button>Search</button><button id="all-posters" type="button">Browse all</button></form>
           <p id="poster-status" role="status"></p>
           <div id="posters" class="posters"></div>
           <button id="more-posters" type="button" hidden>Load more</button>
         </div>
-        <a id="gallery-link" href="https://theposterdb.com/user/RedHeadJedi?category=Collections&amp;textless=Non-Textless&amp;language=en&amp;sort=Recent&amp;variation=orig&amp;section=uploads" target="_blank" rel="noopener">RedHeadJedi on ThePosterDB</a>
+        <a id="gallery-link" target="_blank" rel="noopener" hidden>Open gallery on ThePosterDB</a>
       </aside>
     </div>
   </main>
