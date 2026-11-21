@@ -118,7 +118,7 @@ createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://images.theposterdb.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://images.theposterdb.com https://image.tmdb.org; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   try {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, { ok: true });
@@ -153,6 +153,7 @@ createServer(async (req, res) => {
         return send(res, 200, filter(await source.movieIndex(), query, number, 48));
       }
       if (path === '/api/detail') return send(res, 200, await source.details(key(input.get('provider'), input.get('id'), input.get('kind'))));
+      if (path === '/api/metadata') return send(res, 200, await source.metadata(key(input.get('provider'), input.get('id'), input.get('kind'))));
       if (path === '/api/posters') {
         const number = page(input);
         const query = (input.get('q') ?? '').slice(0, 150).trim();
@@ -197,7 +198,8 @@ createServer(async (req, res) => {
       const title = typeof data.title === 'string' ? data.title.trim() : '';
       if (!title || title.length > 150 || !Array.isArray(data.contentIds) || !data.contentIds.length ||
         data.contentIds.length > 1000 || data.contentIds.some((id) => typeof id !== 'string') ||
-        typeof data.posterId !== 'string' || !/^\d{1,15}$/.test(data.posterId)) {
+        typeof data.posterId !== 'string' || !/^\d{1,15}$/.test(data.posterId) ||
+        (data.description != null && (typeof data.description !== 'string' || data.description.length > 8000))) {
         throw new AppError(400, 'Choose a title, a poster, and at least one matched library item.');
       }
       const { detail, libraryIds, matches } = await preview(data);
@@ -206,7 +208,16 @@ createServer(async (req, res) => {
       if (members.some((m) => !m)) throw new AppError(409, 'Library matches changed. Preview again before importing.');
       const poster = await source.posterById(data.posterId, data.posterCreator);
       if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
-      return send(res, 201, await silo.publish({ detail, title, libraryIds, members, poster }));
+      let metadata = detail.metadata;
+      let warning;
+      if (!metadata && (data.description == null || data.includeBackdrop !== false)) {
+        try { metadata = await source.metadata(key(data.provider, data.id, data.kind)); }
+        catch { warning = 'TMDb metadata could not be loaded.'; }
+      }
+      const result = await silo.publish({ detail, title, libraryIds, members, poster,
+        description: data.description ?? metadata?.description?.slice(0, 8000),
+        backdrop: data.includeBackdrop === false ? '' : metadata?.backdrop });
+      return send(res, 201, { ...result, warning: result.warning ?? warning });
     }
     return send(res, 404, { error: 'Page not found.' });
   } catch (error) {
