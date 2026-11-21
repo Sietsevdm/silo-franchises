@@ -1,6 +1,10 @@
 import { gunzipSync } from 'node:zlib';
 
-export const gallery = 'https://theposterdb.com/user/RedHeadJedi?category=Collections&textless=Non-Textless&language=en&sort=Recent&variation=orig&section=uploads';
+export const posterSources = ['RedHeadJedi', 'ishalioh', 'ashlyfxxk', 'XDM', 'mikenobbs'];
+export function galleryUrl(creator) {
+  if (!posterSources.includes(creator)) throw new AppError(400, 'Choose a configured ThePosterDB source.');
+  return `https://theposterdb.com/user/${creator}?category=Collections&textless=Non-Textless&language=en&sort=Recent&variation=orig&section=uploads`;
+}
 const tvdb = 'https://thetvdb.com';
 const tmdb = 'https://api.themoviedb.org/3';
 const ttl = 6 * 60 * 60 * 1000;
@@ -134,21 +138,35 @@ export function providers(token) {
     }
   });
 
-  const galleryPage = cached(async (number) => {
-    const url = new URL(gallery);
+  let galleryQueue = Promise.resolve();
+  const lastGalleryPage = new Map();
+  function loadGallery(url) {
+    const load = galleryQueue.then(() => html(url, 'ThePosterDB'));
+    galleryQueue = load.catch(() => {}).then(() => new Promise((resolve) => setTimeout(resolve, 275)));
+    return load;
+  }
+  const readGalleryPage = cached(async (key) => {
+    const [creator, number] = key.split(':');
+    const url = new URL(galleryUrl(creator));
     url.searchParams.set('page', number);
-    const parsed = parseGallery(await html(url, 'ThePosterDB'));
-    if (!parsed.items.length && number === 1) throw new AppError(502, 'ThePosterDB gallery returned no recognizable poster cards.');
+    const parsed = parseGallery(await loadGallery(url));
+    if (!parsed.items.length && number === '1') throw new AppError(502, 'ThePosterDB gallery returned no recognizable poster cards.');
+    parsed.items = parsed.items.map((poster) => ({ ...poster, creator }));
     for (const poster of parsed.items) seenPosters.set(poster.id, poster);
+    if (!parsed.more) lastGalleryPage.set(creator, { page: Number(number), expires: Date.now() + ttl });
     return parsed;
   });
-  const posterIndex = cached(async () => {
+  const galleryPage = (creator, number) => {
+    const last = lastGalleryPage.get(creator);
+    if (last && last.expires > Date.now() && number > last.page) return Promise.resolve({ items: [], more: false });
+    return readGalleryPage(`${creator}:${number}`);
+  };
+  const posterIndex = cached(async (creator) => {
     const result = [];
     for (let page = 1; page <= 100; page++) {
-      const batch = await galleryPage(page);
+      const batch = await galleryPage(creator, page);
       result.push(...batch.items);
       if (!batch.more) return [...new Map(result.map((item) => [item.id, item])).values()];
-      await new Promise((resolve) => setTimeout(resolve, 300));
     }
     throw new AppError(502, 'ThePosterDB gallery exceeded the index page limit.');
   });
@@ -190,6 +208,11 @@ export function providers(token) {
     }
     return { provider, id, title: list.title, url: list.url, members };
   });
-  const posterById = async (id) => seenPosters.get(id) ?? (await posterIndex()).find((poster) => poster.id === id);
+  const posterById = async (id, creator) => {
+    if (!posterSources.includes(creator)) throw new AppError(400, 'Choose a configured poster source.');
+    const seen = seenPosters.get(id);
+    if (seen?.creator === creator) return seen;
+    return (await posterIndex(creator)).find((poster) => poster.id === id);
+  };
   return { tvIndex, tvList, movieIndex, posterIndex, galleryPage, details, posterById };
 }
