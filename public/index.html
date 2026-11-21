@@ -22,6 +22,12 @@
           <button type="button" data-provider="silo" aria-pressed="false">In Silo</button>
         </div>
         <form id="franchise-form" class="search"><input id="franchise-query" type="search" aria-label="Search franchises" placeholder="Search franchises"><button>Search</button></form>
+        <label class="line">Sort by <select id="franchise-sort">
+          <option value="default">Source order</option>
+          <option value="title-asc">Title A–Z</option>
+          <option value="title-desc">Title Z–A</option>
+          <option value="popular" id="sort-popular" hidden>Most starred</option>
+        </select></label>
         <p id="franchise-status" role="status"></p>
         <div class="line select-bar"><label><input id="select-visible" type="checkbox"> Select visible</label><span id="selection-count">0 selected</span></div>
         <div id="franchises" class="franchises"></div>
@@ -51,6 +57,7 @@
             <fieldset><legend>Silo libraries</legend><div id="libraries"></div><p id="library-status" role="status"></p></fieldset>
             <button id="preview" type="button">Preview library matches</button>
             <p id="match-status" role="status"></p>
+            <p id="library-eligibility" role="status"></p>
             <div id="matches" class="matches"></div>
           </div>
           <div class="publish"><button class="accent" id="publish" type="button" disabled>Add to Silo</button> <button id="queue-current" type="button" disabled>Save to bulk queue</button><p id="publish-status" role="status"></p></div>
