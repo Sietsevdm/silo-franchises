@@ -6,7 +6,8 @@ const kind = location.pathname === '/tv' ? 'series' : 'movie';
 const state = { provider: kind === 'series' ? 'tvdb' : 'tmdb', selected: new Map(), drafts: new Map(), existing: [], libraries: [], rows: [] };
 const titleKey = (title) => title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/\b(?:franchise|collection|universe)\s*$/, '').replace(/^the\s+/, '').replace(/[^a-z0-9]/g, '');
-const sourceKey = (url) => (url ?? '').replace(/^https?:\/\/(?:www\.)?/, '').replace(/\/$/, '');
+const sourceKey = (url) => (url ?? '').replace(/^tmdb:\/\/collection\//, 'themoviedb.org/collection/')
+  .replace(/^https?:\/\/(?:www\.)?/, '').replace(/\/$/, '');
 function franchiseFromCollection(collection) {
   const source = sourceKey(collection.sourceUrl);
   const movie = source.match(/^themoviedb\.org\/collection\/(\d+)(?:-[\w-]+)?$/);
@@ -141,9 +142,22 @@ function openPanel(title, editing) {
   state.metadataRun = null;
   el('tmdb-backdrop').hidden = true;
   el('tmdb-backdrop').removeAttribute('src');
+  state.defaultBackdrop = '';
+  state.selectedBackdrop = null;
+  state.backdropRun = null;
+  state.backdropOptions = [];
+  el('backdrop-options').replaceChildren();
+  el('more-backdrops').hidden = true;
+  el('tv-backdrop-tools').hidden = kind !== 'series';
+  el('tv-backdrop-url').value = '';
+  el('movie-backdrop-tools').hidden = true;
+  status('backdrop-status', '');
+  el('sync-field').hidden = true;
+  el('sync-tmdb').checked = false;
+  el('sync-note').hidden = true;
   el('metadata-source').hidden = true;
   el('backdrop-field').hidden = true;
-  el('include-backdrop').checked = true;
+  el('include-backdrop').checked = kind === 'movie';
   status('metadata-status', '');
   status('selection-title', title);
   el('queue-current').hidden = editing;
@@ -161,8 +175,13 @@ async function openFranchise(item) {
   state.editing = null;
   state.editFranchise = null;
   state.current = item;
+  state.artworkFranchise = item;
   const draft = state.drafts.get(itemKey(item));
   openPanel(draft?.title ?? item.title, false);
+  el('movie-backdrop-tools').hidden = kind !== 'movie';
+  el('sync-field').hidden = kind !== 'movie' || item.provider !== 'tmdb';
+  el('sync-tmdb').checked = draft?.sync === true;
+  el('sync-note').hidden = !el('sync-tmdb').checked;
   if (draft) {
     for (const check of el('libraries').querySelectorAll('input')) check.checked = draft.libraryIds.includes(check.value);
     renderMatches(draft.matches, draft.contentIds);
@@ -172,6 +191,8 @@ async function openFranchise(item) {
       state.descriptionDirty = true;
     }
     el('include-backdrop').checked = draft.includeBackdrop !== false;
+    el('tv-backdrop-url').value = draft.backdropUrl ?? '';
+    if (draft.selectedBackdrop) chooseBackdrop(draft.selectedBackdrop);
   }
   el('source-link').href = item.url;
   el('source-link').hidden = false;
@@ -184,21 +205,22 @@ async function openFranchise(item) {
 
 async function loadMetadata(item) {
   const run = state.metadataRun = Symbol();
-  status('metadata-status', 'Loading TMDb description and backdrop…');
+  status('metadata-status', kind === 'series' ? 'Loading TheTVDB description…' : 'Loading TMDb description and backdrop…');
   try {
     const metadata = await api('metadata?' + params({ provider: item.provider, id: item.id, kind }));
     if (state.metadataRun !== run) return;
-    if (!metadata) { status('metadata-status', 'No matching TMDb artwork or description found.'); return; }
+    if (!metadata) { status('metadata-status', 'No matching description or artwork found.'); return; }
     state.metadataLoaded = true;
     if (!state.descriptionDirty) el('description').value = metadata.description.slice(0, 8000);
     if (metadata.backdrop) {
-      el('tmdb-backdrop').src = metadata.backdrop;
-      el('tmdb-backdrop').hidden = false;
+      state.defaultBackdrop = metadata.backdrop;
+      if (!state.selectedBackdrop) showBackdrop(state.defaultBackdrop);
       el('backdrop-field').hidden = false;
     }
     const link = el('metadata-source');
     link.href = metadata.url;
-    link.textContent = metadata.kind === 'related' ? `TMDb metadata from ${metadata.title}` : 'Description and backdrop from TMDb';
+    link.textContent = metadata.kind === 'tvdb' ? 'Description from TheTVDB'
+      : metadata.kind === 'related' ? `TMDb metadata from ${metadata.title}` : 'Description and backdrop from TMDb';
     link.hidden = false;
     status('metadata-status', '');
   } catch (error) {
@@ -206,10 +228,68 @@ async function loadMetadata(item) {
   }
 }
 
+function showBackdrop(url) {
+  const image = el('tmdb-backdrop');
+  image.hidden = !url;
+  if (url) image.src = url;
+  else image.removeAttribute('src');
+}
+
+function chooseBackdrop(option) {
+  state.selectedBackdrop = option;
+  if (option) {
+    el('include-backdrop').checked = true;
+    el('backdrop-field').hidden = !!state.editing;
+  }
+  showBackdrop(option?.image ?? state.defaultBackdrop);
+  for (const element of el('backdrop-options').querySelectorAll('button')) {
+    element.setAttribute('aria-pressed', String(element.dataset.path === option?.path));
+  }
+}
+
+function appendBackdrops() {
+  const container = el('backdrop-options');
+  const offset = state.backdropShown ?? 0;
+  for (const item of state.backdropOptions.slice(offset, offset + 18)) {
+    const button = action('', () => chooseBackdrop(item));
+    button.dataset.path = item.path;
+    button.setAttribute('aria-pressed', String(state.selectedBackdrop?.path === item.path));
+    const image = Object.assign(create('img'), { src: item.thumbnail, alt: '', loading: 'lazy' });
+    button.append(image, create('span', item.film));
+    container.append(button);
+  }
+  state.backdropShown = offset + 18;
+  el('more-backdrops').hidden = state.backdropShown >= state.backdropOptions.length;
+}
+
+el('load-backdrops').onclick = async () => {
+  const item = state.artworkFranchise;
+  if (!item) return;
+  const run = state.backdropRun = Symbol();
+  el('backdrop-options').replaceChildren();
+  el('more-backdrops').hidden = true;
+  status('backdrop-status', 'Loading backdrops from the franchise’s movies…');
+  try {
+    const result = await api('backdrops?' + params({ provider: item.provider, id: item.id, kind }));
+    if (state.backdropRun !== run) return;
+    state.backdropOptions = result.items;
+    state.backdropShown = 0;
+    if (state.defaultBackdrop || state.editing) el('backdrop-options').append(
+      action(state.editing ? 'Keep existing backdrop' : 'Use collection backdrop', () => chooseBackdrop(null), 'backdrop-reset'));
+    appendBackdrops();
+    status('backdrop-status', [result.items.length ? '' : 'No movie backdrops found.',
+      result.unavailable.length ? `Could not load artwork for ${result.unavailable.length} movies.` : ''].filter(Boolean).join(' '));
+  } catch (error) {
+    if (state.backdropRun === run) status('backdrop-status', error.message);
+  }
+};
+el('more-backdrops').onclick = appendBackdrops;
+
 async function openExisting(item, franchise = null) {
   state.current = null;
   state.editing = null;
   state.editFranchise = null;
+  state.artworkFranchise = null;
   openPanel(item.title, true);
   el('description').value = '';
   status('detail-status', 'Loading Silo collection…');
@@ -218,6 +298,8 @@ async function openExisting(item, franchise = null) {
     const result = await api('collection?' + params({ id: item.id }));
     if (state.editRun !== run || state.current) return;
     state.editing = result;
+    state.artworkFranchise = franchise ?? franchiseFromCollection(result);
+    el('movie-backdrop-tools').hidden = kind !== 'movie' || !state.artworkFranchise;
     state.editFranchise = result.kind === 'manual' ? franchise ?? franchiseFromCollection(result) : null;
     if (state.editFranchise) {
       let available = 0;
@@ -256,7 +338,10 @@ function renderMatches(result, chosen) {
     const row = create(item.contentId ? 'label' : 'div');
     row.className = 'match';
     if (item.contentId && !used.has(item.contentId)) {
-      row.append(inputCheck(item.contentId, !chosen || chosen.includes(item.contentId), updateActions));
+      const sync = el('sync-tmdb').checked;
+      const checkbox = inputCheck(item.contentId, sync || !chosen || chosen.includes(item.contentId), updateActions);
+      checkbox.disabled = sync;
+      row.append(checkbox);
       used.add(item.contentId);
     } else row.classList.add('missing');
     const details = create('div');
@@ -374,13 +459,16 @@ function draftFor(item) {
   return { ...requestFor(item, checked('libraries')), title: el('collection-title').value, poster: state.poster,
     contentIds: checked('matches'), matches: state.matches,
     description: state.descriptionDirty || state.metadataLoaded ? el('description').value : undefined,
-    includeBackdrop: el('include-backdrop').checked };
+    includeBackdrop: el('include-backdrop').checked, selectedBackdrop: state.selectedBackdrop,
+    backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
+    sync: el('sync-tmdb').checked };
 }
 const ready = (draft) => !!draft?.poster &&
   [...libraryCounts(draft.matches, draft.contentIds, draft.libraryIds).values()].some((count) => count >= 2);
 const importDraft = (draft) => post('import', { provider: draft.provider, id: draft.id, kind: draft.kind,
   libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, posterId: draft.poster.id,
-  posterCreator: draft.poster.creator, description: draft.description, includeBackdrop: draft.includeBackdrop });
+  posterCreator: draft.poster.creator, description: draft.description, includeBackdrop: draft.includeBackdrop,
+  backdropUrl: draft.backdropUrl, backdropPath: draft.includeBackdrop ? draft.selectedBackdrop?.path : undefined, sync: draft.sync });
 
 function drawQueue() {
   const available = state.rows.filter((item) => item.provider !== 'silo' && !matchesFor(item).length);
@@ -503,6 +591,9 @@ el('publish').onclick = async () => {
     const result = editing
       ? await post('edit', { collectionId: editing.id, etag: editing.etag, title: el('collection-title').value,
         description: el('description').value, posterId: state.poster?.id, posterCreator: state.poster?.creator,
+        kind, backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
+        ...(state.selectedBackdrop && state.artworkFranchise
+          ? { ...requestFor(state.artworkFranchise, checked('libraries')), backdropPath: state.selectedBackdrop.path } : {}),
         ...(state.editFranchise && checked('matches').length
           ? { ...requestFor(state.editFranchise, checked('libraries')), contentIds: checked('matches') } : {}) })
       : await importDraft(draftFor(item));
@@ -511,10 +602,13 @@ el('publish').onclick = async () => {
     if (editing && state.editing === editing) {
       state.editing = await api('collection?' + params({ id: editing.id }));
       showPoster(null);
+      chooseBackdrop(null);
+      el('tv-backdrop-url').value = '';
       invalidateMatches();
     }
     if ((item && item === state.current) || (editing && editing.id === state.editing?.id)) {
       status('publish-status', [`Saved “${result.title}” in Silo.`,
+        result.synced ? 'Silo will sync it with TMDb daily.' : '',
         editing && result.added != null ? `${result.added} new titles added.` : '',
         result.skippedLibraries?.length ? `Skipped libraries with fewer than two titles: ${result.skippedLibraries.join(', ')}.` : '',
         result.warning].filter(Boolean).join(' '));
@@ -532,6 +626,14 @@ el('franchise-form').onsubmit = (event) => { event.preventDefault(); listFranchi
 el('franchise-sort').onchange = () => listFranchises(true);
 el('collection-title').oninput = () => { status('selection-title', el('collection-title').value || 'Your collection'); updateActions(); };
 el('description').oninput = () => { state.descriptionDirty = true; };
+el('sync-tmdb').onchange = (event) => {
+  el('sync-note').hidden = !event.target.checked;
+  for (const input of el('matches').querySelectorAll('input')) {
+    input.disabled = event.target.checked;
+    if (event.target.checked) input.checked = true;
+  }
+  updateActions();
+};
 for (const button of document.querySelectorAll('[data-provider]')) {
   button.hidden = kind === 'series' && button.dataset.provider === 'tmdb';
   button.setAttribute('aria-pressed', String(button.dataset.provider === state.provider));
