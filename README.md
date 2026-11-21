@@ -1,6 +1,6 @@
 # Silo Franchises
 
-A self-hosted Silo sidecar. Browse TMDb movie collections and TheTVDB official lists, choose a RedHeadJedi collection poster, preview the movies and series available in selected Silo libraries, and import a manual server collection.
+A self-hosted Silo sidecar. Browse TMDb movie collections and TheTVDB official lists, choose a ThePosterDB collection poster, preview the movies and series available in selected Silo libraries, and import a manual server collection.
 
 ## Deploy in Portainer
 
@@ -19,9 +19,9 @@ To run with Docker Compose from a shell, copy `.env.example` to `.env`, fill in 
 - Use **In Silo** or an **In Silo · Edit** badge to change a collection's name, description, or artwork. Saving an edit keeps its existing membership and rules.
 
 - Select a franchise and the libraries to search. The preview matches existing library entries by TMDb, TheTVDB, or IMDb ID, then by unambiguous title and year when available. It shows unmatched titles and lets you deselect matched titles before importing.
-- The app downloads the public gallery artwork and uploads it to Silo as the collection poster. It uses the optimized JPEG served by the specified RedHeadJedi gallery. Browse all posters if your search terms differ from the gallery title.
+- The **Poster source** menu supports RedHeadJedi, ishalioh, ashlyfxxk, XDM, and mikenobbs. Select one creator or search all five together. Every result shows the creator. The app uploads the optimized JPEG from the selected public gallery to Silo.
 - An import creates a manual Silo server collection with only the titles you select. It does not download media, change existing media metadata, or schedule future collection updates.
 - Existing same-name collections in the same libraries are protected. If an import creates the collection but is interrupted during member addition or upload, retry with the same franchise, name, and library selection to resume. The app adds selected members and uploads the chosen artwork. It does not remove members from a previous attempt.
 - TMDb's daily collection export, TheTVDB's public list directory, and ThePosterDB's public gallery are cached in memory. The first search after startup can take longer. TVDb and poster indexing depend on the upstream page formats and availability.
 
-This app uses the [Silo v2 catalog API](https://github.com/Silo-Server/silo-server/blob/main/docs/catalog-api.md), [TMDb daily collection exports](https://developer.themoviedb.org/docs/daily-id-exports), and [TheTVDB official lists](https://www.thetvdb.com/lists). Artwork is credited to [RedHeadJedi on ThePosterDB](https://theposterdb.com/user/RedHeadJedi).
+This app uses the [Silo v2 catalog API](https://github.com/Silo-Server/silo-server/blob/main/docs/catalog-api.md), [TMDb daily collection exports](https://developer.themoviedb.org/docs/daily-id-exports), and [TheTVDB official lists](https://www.thetvdb.com/lists). Poster cards credit their [ThePosterDB](https://theposterdb.com/) creators.
