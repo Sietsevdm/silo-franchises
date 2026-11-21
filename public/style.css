@@ -76,6 +76,7 @@ main { width: 100%; }
 .search input { flex: 1; min-width: 8rem; }
 .select-bar { display: flex; justify-content: space-between; margin: .85rem 0 .55rem; color: var(--muted); font-size: .9rem; }
 .select-bar label, #backdrop-field, #sync-field { display: flex; align-items: center; gap: .45rem; }
+.check-line { display: flex; align-items: center; gap: .45rem; margin: .6rem 0; color: var(--muted); }
 .franchises, .matches { display: grid; gap: .2rem; margin: .45rem 0 .7rem; }
 .franchises { max-height: 45vh; overflow: auto; padding: .2rem; }
 .franchise-row, .queue-row {
@@ -138,8 +139,11 @@ fieldset label, .match { display: flex; align-items: start; gap: .5rem; padding:
 .match.missing { color: var(--muted); }
 .publish { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--line); }
 
-.poster-preview { display: flex; gap: .75rem; align-items: center; border-bottom: 1px solid var(--line); }
-#chosen-poster img { width: clamp(4rem, 8vw, 8rem); border-radius: .65rem; display: block; margin: .75rem 0; }
+.poster-preview { display: grid; justify-items: start; border-bottom: 1px solid var(--line); }
+.poster-preview p { margin: .65rem 0; }
+#chosen-poster { width: 100%; }
+#chosen-poster img { width: min(100%, 17rem); max-height: 55vh; object-fit: contain; object-position: left; border-radius: .65rem; display: block; margin-top: .75rem; }
+.custom-poster { border-top: 1px solid var(--line); margin-top: 1rem; padding-bottom: .65rem; }
 .artwork > a { display: inline-block; margin-top: .8rem; font-size: .9rem; }
 .posters { display: grid; grid-template-columns: repeat(auto-fill, minmax(6.8rem, 1fr)); gap: .6rem; margin: .65rem 0; }
 .posters button { display: grid; align-content: start; gap: .35rem; padding: .35rem; text-align: left; overflow-wrap: anywhere; font-size: .86rem; }
