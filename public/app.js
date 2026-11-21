@@ -3,7 +3,7 @@ const status = (id, text) => { el(id).textContent = text; };
 const create = (tag, text) => Object.assign(document.createElement(tag), { textContent: text ?? '' });
 const checked = (container) => [...el(container).querySelectorAll('input:checked')].map((input) => input.value);
 const kind = location.pathname === '/tv' ? 'series' : 'movie';
-const state = { provider: kind === 'series' ? 'tvdb' : 'tmdb', selected: new Map(), drafts: new Map(), existing: [], libraries: [], rows: [] };
+const state = { provider: kind === 'series' ? 'tvdb' : 'tmdb', selected: new Map(), drafts: new Map(), edits: new Map(), existing: [], libraries: [], rows: [] };
 const titleKey = (title) => title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/\b(?:franchise|collection|universe)\s*$/, '').replace(/^the\s+/, '').replace(/[^a-z0-9]/g, '');
 const sourceKey = (url) => (url ?? '').replace(/^tmdb:\/\/collection\//, 'themoviedb.org/collection/')
@@ -160,7 +160,7 @@ function openPanel(title, editing) {
   el('include-backdrop').checked = kind === 'movie';
   status('metadata-status', '');
   status('selection-title', title);
-  el('queue-current').hidden = editing;
+  el('queue-current').textContent = editing ? 'Queue changes' : 'Save to bulk queue';
   el('publish').textContent = editing ? 'Save changes' : 'Add to Silo';
   el('collection-title').value = title;
   el('source-link').hidden = true;
@@ -313,6 +313,16 @@ async function openExisting(item, franchise = null) {
     }
     el('collection-title').value = result.title;
     el('description').value = result.description;
+    const queued = state.edits.get(result.id);
+    if (queued) {
+      el('collection-title').value = queued.payload.title;
+      status('selection-title', queued.payload.title);
+      el('description').value = queued.payload.description;
+      el('tv-backdrop-url').value = queued.payload.backdropUrl ?? '';
+      showPoster(queued.poster);
+      if (queued.backdrop) chooseBackdrop(queued.backdrop);
+      if (state.editFranchise && queued.payload.contentIds?.length) renderMatches(queued.matches, queued.payload.contentIds);
+    }
     status('detail-status', `Editing Silo collection · ${result.count ?? 0} titles${el('membership').hidden ? '' : ' · Preview library matches to add titles'}`);
     if (!state.poster) status('poster-label', 'Current artwork will be kept unless you select a replacement.');
     updateActions();
@@ -377,7 +387,7 @@ function libraryCounts(matches, contentIds, libraryIds) {
 function updateActions() {
   const valid = Boolean(el('collection-title').value.trim());
   el('publish').disabled = !!state.busy || !valid || !(state.editing || canImport());
-  el('queue-current').disabled = !!state.busy || !valid || !canImport();
+  el('queue-current').disabled = !!state.busy || !valid || !(state.editing?.etag || canImport());
   if (state.current && state.matches?.length) {
     const counts = libraryCounts(state.matches, checked('matches'), checked('libraries'));
     const summary = [...counts].map(([id, count]) => {
@@ -470,6 +480,24 @@ const importDraft = (draft) => post('import', { provider: draft.provider, id: dr
   posterCreator: draft.poster.creator, description: draft.description, includeBackdrop: draft.includeBackdrop,
   backdropUrl: draft.backdropUrl, backdropPath: draft.includeBackdrop ? draft.selectedBackdrop?.path : undefined, sync: draft.sync });
 
+function editDraft(editing) {
+  const libraryIds = checked('libraries');
+  const contentIds = checked('matches');
+  return {
+    collection: editing, franchise: state.artworkFranchise, poster: state.poster,
+    backdrop: state.selectedBackdrop, matches: state.matches,
+    payload: {
+      collectionId: editing.id, etag: editing.etag, title: el('collection-title').value,
+      description: el('description').value, posterId: state.poster?.id, posterCreator: state.poster?.creator,
+      kind, backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
+      ...(state.selectedBackdrop && state.artworkFranchise
+        ? { ...requestFor(state.artworkFranchise, libraryIds), backdropPath: state.selectedBackdrop.path } : {}),
+      ...(state.editFranchise && contentIds.length
+        ? { ...requestFor(state.editFranchise, libraryIds), contentIds } : {}),
+    },
+  };
+}
+
 function drawQueue() {
   const available = state.rows.filter((item) => item.provider !== 'silo' && !matchesFor(item).length);
   const all = el('select-visible');
@@ -490,9 +518,20 @@ function drawQueue() {
       create('small', draft?.error ?? (ready(draft) ? 'Ready' : draft ? 'Needs a poster and 2 titles in one library' : 'Needs preparation')));
     queue.append(row);
   }
+  for (const [id, draft] of state.edits) {
+    const row = create('div');
+    row.className = 'queue-row';
+    const remove = action('Remove', () => { state.edits.delete(id); drawQueue(); });
+    remove.setAttribute('aria-label', 'Remove queued edit for ' + draft.payload.title);
+    remove.disabled = !!state.busy;
+    row.append(action(draft.payload.title, () => openExisting(draft.collection, draft.franchise), 'row-title'),
+      create('small', draft.error ?? 'Edit ready'), remove);
+    queue.append(row);
+  }
+  readyCount += state.edits.size;
   el('prepare-bulk').disabled = !state.selected.size || !!state.busy;
   el('import-bulk').disabled = !readyCount || !!state.busy;
-  el('import-bulk').textContent = `Import ${readyCount} ready`;
+  el('import-bulk').textContent = `${state.edits.size ? 'Apply' : 'Import'} ${readyCount} ready`;
 }
 
 el('select-visible').onchange = (event) => {
@@ -504,6 +543,12 @@ el('select-visible').onchange = (event) => {
   drawRows();
 };
 el('queue-current').onclick = () => {
+  if (state.editing) {
+    state.edits.set(state.editing.id, editDraft(state.editing));
+    status('publish-status', 'Changes queued. Select Apply ready to save them in Silo.');
+    drawQueue();
+    return;
+  }
   const item = state.current;
   state.selected.set(itemKey(item), item);
   state.drafts.set(itemKey(item), draftFor(item));
@@ -556,6 +601,7 @@ el('import-bulk').onclick = async () => {
   let failed = 0;
   let warnings = 0;
   let skipped = 0;
+  let edited = 0;
   for (const [key] of state.selected) {
     const draft = state.drafts.get(key);
     if (!ready(draft)) continue;
@@ -569,12 +615,27 @@ el('import-bulk').onclick = async () => {
       imported++;
     } catch (error) { draft.error = error.message; failed++; }
   }
+  for (const [id, draft] of state.edits) {
+    status('bulk-status', `Saving changes to ${draft.payload.title}…`);
+    try {
+      await post('edit', draft.payload);
+      state.edits.delete(id);
+      edited++;
+      if (state.editing?.id === id) {
+        await openExisting(draft.collection, draft.franchise);
+        status('publish-status', `Saved “${draft.payload.title}” in Silo.`);
+      }
+    } catch (error) {
+      draft.error = error.message;
+      failed++;
+    }
+  }
   await refreshExisting();
   state.busy = false;
   drawRows();
   updateActions();
   status('bulk-status', [
-    `${imported} imported.`, failed ? `${failed} failed. See the queue for details.` : '',
+    `${imported} imported · ${edited} updated.`, failed ? `${failed} failed. See the queue for details.` : '',
     skipped ? `${skipped} library selections had fewer than two titles and were skipped.` : '',
     warnings ? `${warnings} imported with incomplete TMDb metadata.` : '',
   ].filter(Boolean).join(' '));
@@ -589,14 +650,9 @@ el('publish').onclick = async () => {
   status('publish-status', 'Saving to Silo…');
   try {
     const result = editing
-      ? await post('edit', { collectionId: editing.id, etag: editing.etag, title: el('collection-title').value,
-        description: el('description').value, posterId: state.poster?.id, posterCreator: state.poster?.creator,
-        kind, backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
-        ...(state.selectedBackdrop && state.artworkFranchise
-          ? { ...requestFor(state.artworkFranchise, checked('libraries')), backdropPath: state.selectedBackdrop.path } : {}),
-        ...(state.editFranchise && checked('matches').length
-          ? { ...requestFor(state.editFranchise, checked('libraries')), contentIds: checked('matches') } : {}) })
+      ? await post('edit', editDraft(editing).payload)
       : await importDraft(draftFor(item));
+    if (editing) state.edits.delete(editing.id);
     if (item) { state.selected.delete(itemKey(item)); state.drafts.delete(itemKey(item)); }
     await refreshExisting();
     if (editing && state.editing === editing) {
