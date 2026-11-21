@@ -7,7 +7,11 @@ const ttl = 6 * 60 * 60 * 1000;
 const maxBytes = 15 * 1024 * 1024;
 
 export class AppError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, retryAfter) {
+    super(message);
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
 }
 
 export async function request(url, options = {}, service = 'Upstream') {
@@ -21,8 +25,9 @@ export async function request(url, options = {}, service = 'Upstream') {
     throw new AppError(502, `${service} could not be reached.`);
   }
   if (!response.ok) {
+    const retryAfter = response.headers.get('retry-after');
     await response.body?.cancel();
-    throw new AppError(response.status, `${service} returned HTTP ${response.status}.`);
+    throw new AppError(response.status, `${service} returned HTTP ${response.status}.`, retryAfter);
   }
   return response;
 }
