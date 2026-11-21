@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseGallery, parseTVIndex, parseTVMembers } from './providers.mjs';
+import { galleryUrl, parseGallery, parseTVIndex, parseTVMembers, providers } from './providers.mjs';
 import { matchMembers, siloClient } from './silo.mjs';
 
 test('extracts official lists, franchise members and attributed gallery cards', () => {
@@ -109,4 +109,26 @@ test('catalog previews retry rate limits and share a media-filtered per-library 
   assert.deepEqual(results, [expected, expected]);
   assert.deepEqual(await silo.catalog(['1'], 'series'), expected);
   assert.deepEqual(calls, [null, 'next', 'next']);
+});
+
+test('poster selections stay bound to their allowlisted creator', async (t) => {
+  const requested = [];
+  t.mock.method(globalThis, 'fetch', async (input) => {
+    const url = new URL(input);
+    const creator = url.pathname.split('/').at(-1);
+    requested.push(creator);
+    assert.equal(url.searchParams.get('category'), 'Collections');
+    const id = creator === 'XDM' ? '11' : '22';
+    return new Response(`<div class="hovereffect rounded-poster">
+      <source srcset="https://images.theposterdb.com/prod/public/images/posters/optimized/collections/1/poster.jpg">
+      <div data-poster-id='${id}'><p class="p-0 mb-1 text-break">Example</p>`);
+  });
+  const source = providers();
+  assert.throws(() => galleryUrl('unknown'), { status: 400 });
+  const page = await source.galleryPage('XDM', 1);
+  assert.equal(page.items[0].creator, 'XDM');
+  assert.equal((await source.posterById('11', 'XDM')).id, '11');
+  assert.equal(await source.posterById('11', 'mikenobbs'), undefined);
+  assert.deepEqual(requested, ['XDM', 'mikenobbs']);
+  assert.deepEqual(await source.galleryPage('mikenobbs', 2), { items: [], more: false });
 });
