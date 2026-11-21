@@ -194,6 +194,12 @@ body:not(.editor-open) .franchise-row {
 .bulk-settings { background: var(--panel); }
 .bulk-settings .field { margin-bottom: 0; }
 .bulk-actions { margin-bottom: .85rem; }
+.browse-filters { margin: .65rem 0; }
+.browse-filters label { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; }
+#hidden-franchises { margin: .6rem 0; }
+.franchise-row { flex-wrap: wrap; }
+.franchise-row .row-title { flex: 1 1 7rem; }
+.hide-franchise { font-size: .78rem; padding: .35rem .45rem; }
 .queue-tools, .preset-tools, #automation-options, #silo-order {
   background: var(--panel);
   border: 1px solid var(--line);

@@ -25,16 +25,27 @@
           <button type="button" data-provider="silo" aria-pressed="false">In Silo</button>
         </div>
         <form id="franchise-form" class="search"><input id="franchise-query" type="search" aria-label="Search franchises" placeholder="Search franchises"><button>Search</button></form>
-        <label class="line">Sort by <select id="franchise-sort">
+        <div class="line browse-filters"><label>Sort by <select id="franchise-sort">
           <option value="default">Source order</option>
           <option value="title-asc">Title A–Z</option>
           <option value="title-desc">Title Z–A</option>
           <option value="popular" id="sort-popular" hidden>Most starred</option>
         </select></label>
+        <label id="title-language-field">Title language <select id="title-language">
+          <option value="en-nl">English &amp; Dutch</option>
+          <option value="en">English</option>
+          <option value="nl">Dutch</option>
+          <option value="original">Original titles</option>
+        </select></label></div>
         <p id="franchise-status" role="status"></p>
         <div class="line select-bar"><label><input id="select-visible" type="checkbox"> Select visible</label><span id="selection-count">0 selected</span></div>
         <p id="queue-nav-status" role="status"></p>
         <label id="hide-existing-field" class="check-line"><input id="hide-existing" type="checkbox"> Hide collections already in Silo</label>
+        <details id="hidden-franchises" hidden>
+          <summary id="hidden-summary">Hidden franchises</summary>
+          <div id="hidden-rows"></div>
+        </details>
+        <p id="hidden-status" role="status"></p>
         <details id="silo-order" hidden>
           <summary>Collection order</summary>
           <label class="field">Silo library<select id="order-library"></select></label>

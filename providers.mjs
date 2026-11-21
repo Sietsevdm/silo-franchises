@@ -100,6 +100,18 @@ export function parseTVMembers(page) {
     }));
 }
 
+export function parseTVListTitles(page) {
+  const titles = {};
+  for (const [tag] of page.matchAll(/<div\b[^>]*\bchange_translation_text\b[^>]*>/gi)) {
+    const attribute = (name) => tag.match(new RegExp('\\b' + name + '\\s*=\\s*(["\'])(.*?)\\1', 'i'))?.[2];
+    const code = attribute('data-language');
+    const lang = ['eng', 'en'].includes(code) ? 'en' : ['nld', 'dut', 'nl'].includes(code) ? 'nl' : null;
+    const title = decode(attribute('data-title') ?? '').trim();
+    if (lang && title && allowedFranchiseTitle(title)) titles[lang] ??= title;
+  }
+  return titles;
+}
+
 function cached(loader, lifetime = ttl) {
   const entries = new Map();
   return (key) => {
@@ -167,6 +179,17 @@ export function providers(token) {
       }
     }
   });
+  const movieTitles = cached(async (id) => {
+    const result = await tmdbJson(`/collection/${id}/translations`);
+    const titles = {};
+    for (const entry of result.translations ?? []) {
+      const lang = entry.iso_639_1;
+      const title = (entry.data?.title || entry.data?.name)?.trim();
+      if (!['en', 'nl'].includes(lang) || !title || !allowedFranchiseTitle(title)) continue;
+      if (!titles[lang] || (lang === 'en' && entry.iso_3166_1 === 'US') || (lang === 'nl' && entry.iso_3166_1 === 'NL')) titles[lang] = title;
+    }
+    return titles;
+  });
 
   let galleryQueue = Promise.resolve();
   const lastGalleryPage = new Map();
@@ -216,7 +239,7 @@ export function providers(token) {
     const items = parseTVMembers(page);
     if (!items.length) throw new AppError(502, 'TheTVDB returned no recognizable list members.');
     const description = page.match(/<div\b[^>]*class="change_translation_text"[^>]*data-language="eng"[^>]*>([\s\S]*?)<\/div>/i)?.[1];
-    return { ...official, items, description: decode(description ?? '') };
+    return { ...official, items, description: decode(description ?? ''), titles: parseTVListTitles(page) };
   });
   const details = cached(async (key) => {
     const [provider, id, kind] = key.split(':');
@@ -313,5 +336,5 @@ export function providers(token) {
     if (seen?.creator === creator) return seen;
     return (await posterIndex(creator)).find((poster) => poster.id === id);
   };
-  return { tvIndex, tvList, movieIndex, posterIndex, galleryPage, details, metadata, posterById, backdrops };
+  return { tvIndex, tvList, movieIndex, movieTitles, posterIndex, galleryPage, details, metadata, posterById, backdrops };
 }

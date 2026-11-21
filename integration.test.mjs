@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allowedFranchiseTitle, galleryUrl, parseGallery, parseTVIndex, parseTVMembers, providers } from './providers.mjs';
+import { allowedFranchiseTitle, galleryUrl, parseGallery, parseTVIndex, parseTVListTitles, parseTVMembers, providers } from './providers.mjs';
 import { eligibleCollection, matchMembers, previewKind, siloClient } from './silo.mjs';
 import { publicArtworkUrl } from './remote-artwork.mjs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -95,6 +95,32 @@ test('extracts official lists, franchise members and attributed gallery cards', 
   assert.equal(gallery.items[0].title, 'Rock & Roll');
   assert.equal(gallery.items[0].url, 'https://theposterdb.com/poster/22');
   assert.equal(gallery.more, true);
+});
+
+test('reads English and Dutch title fields from TheTVDB’s official list translations', () => {
+  assert.deepEqual(parseTVListTitles(`
+    <div class="change_translation_text" data-language="eng" data-title="A &amp; B">Description</div>
+    <div data-title='Een franchise' class='change_translation_text hidden' data-language='nld'></div>
+    <div class="change_translation_text" data-language="fra" data-title="Une franchise"></div>
+  `), { en: 'A & B', nl: 'Een franchise' });
+});
+
+test('TMDb title filtering accepts named English and Dutch translations only', async (t) => {
+  let count = 0;
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.equal(url, 'https://api.themoviedb.org/3/collection/123/translations');
+    count++;
+    return Response.json({ translations: [
+      { iso_639_1: 'en', iso_3166_1: 'GB', data: { title: 'UK title' } },
+      { iso_639_1: 'en', iso_3166_1: 'US', data: { title: 'US title' } },
+      { iso_639_1: 'nl', iso_3166_1: 'NL', data: { name: 'Nederlandse titel' } },
+      { iso_639_1: 'fr', iso_3166_1: 'FR', data: { title: 'Titre' } },
+    ] });
+  });
+  const source = providers('credential');
+  assert.deepEqual(await source.movieTitles('123'), { en: 'US title', nl: 'Nederlandse titel' });
+  await source.movieTitles('123');
+  assert.equal(count, 1);
 });
 
 test('provider ID matching respects media type and rejects conflicting fallback IDs', () => {

@@ -228,18 +228,21 @@ async function selectedBackdrop(data) {
   return {};
 }
 
-async function browseTVDb(query, cursor, kind, sort) {
-  const candidates = filter((await source.tvIndex()).filter((item) => allowedFranchiseTitle(item.title)),
-    query, 1, Number.MAX_SAFE_INTEGER, sort).items;
-  const size = 12;
+function localizedItem(item, titles, language) {
+  if (language === 'original') return allowedFranchiseTitle(item.title) ? item : null;
+  const code = language === 'en-nl' ? (titles.en ? 'en' : 'nl') : language;
+  return titles[code] ? { ...item, originalTitle: item.title, title: titles[code], titleLanguage: code } : null;
+}
+
+async function browseCandidates(candidates, cursor, load) {
+  const size = 18;
   const matches = [];
   let next = cursor;
-  const end = Math.min(candidates.length, cursor + 50);
+  const end = Math.min(candidates.length, cursor + 48);
   while (next < end && matches.length < size) {
     const batch = await Promise.all(candidates.slice(next, Math.min(end, next + 5)).map(async (item) => {
       try {
-        const list = await source.tvList(item.id);
-        return list.items.some((member) => member.type === kind) ? item : null;
+        return await load(item);
       } catch (error) {
         if (error.status === 404) return null;
         throw error;
@@ -278,6 +281,7 @@ createServer(async (req, res) => {
         .map((library) => ({ id: library.id, name: library.name, type: library.type, previewKind: previewKind(library) })));
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
       if (path === '/api/drafts') return send(res, 200, await state.get('drafts', queueKind(input.get('kind'))) ?? { revision: 0 });
+      if (path === '/api/hidden-franchises') return send(res, 200, await state.get('hidden', queueKind(input.get('kind'))) ?? []);
       if (path === '/api/collection') {
         const id = collectionId(input.get('id'));
         const [{ value, etag }, undo] = await Promise.all([silo.getCollection(id), state.get('undo', id)]);
@@ -323,12 +327,24 @@ createServer(async (req, res) => {
         const sort = input.get('sort');
         const number = page(input);
         const cursor = Number(input.get('cursor') || 0);
-        if (provider === 'tvdb' && ['movie', 'series'].includes(kind) && Number.isSafeInteger(cursor) && cursor >= 0) {
-          return send(res, 200, await browseTVDb(query, cursor, kind, sort));
+        const language = input.get('language') || 'original';
+        if (!['en-nl', 'en', 'nl', 'original'].includes(language) || !Number.isSafeInteger(cursor) || cursor < 0) {
+          throw new AppError(400, 'Choose a valid title language and result page.');
+        }
+        if (provider === 'tvdb' && ['movie', 'series'].includes(kind)) {
+          const candidates = filter(await source.tvIndex(), query, 1, Number.MAX_SAFE_INTEGER, sort).items;
+          return send(res, 200, await browseCandidates(candidates, cursor, async (item) => {
+            const list = await source.tvList(item.id);
+            return list.items.some((member) => member.type === kind) ? localizedItem(item, list.titles, language) : null;
+          }));
         }
         if (provider !== 'tmdb' || kind !== 'movie') throw new AppError(400, 'Choose a source for this media type.');
-        return send(res, 200, filter((await source.movieIndex()).filter((item) => allowedFranchiseTitle(item.title)),
-          query, number, 48, sort === 'popular' ? null : sort));
+        const index = await source.movieIndex();
+        if (language === 'original') return send(res, 200, filter(index.filter((item) => allowedFranchiseTitle(item.title)),
+          query, number, 48, sort));
+        const candidates = filter(index, query, 1, Number.MAX_SAFE_INTEGER, sort).items;
+        return send(res, 200, await browseCandidates(candidates, cursor, async (item) =>
+          localizedItem(item, await source.movieTitles(item.id), language)));
       }
       if (path === '/api/detail') return send(res, 200, await source.details(key(input.get('provider'), input.get('id'), input.get('kind'))));
       if (path === '/api/metadata') return send(res, 200, await source.metadata(key(input.get('provider'), input.get('id'), input.get('kind'))));
@@ -374,6 +390,20 @@ createServer(async (req, res) => {
         return { revision: revision + 1, queue: { selected: queue.selected, drafts: queue.drafts, edits: queue.edits } };
       });
       return send(res, 200, { revision: result.revision });
+    }
+    if (req.method === 'POST' && path === '/api/hidden-franchises') {
+      const data = await body(req);
+      const kind = queueKind(data.kind);
+      key(data.provider, data.id, kind);
+      if (typeof data.hidden !== 'boolean' || typeof data.title !== 'string' || !data.title.trim() || data.title.length > 500) {
+        throw new AppError(400, 'Choose a valid franchise to hide or restore.');
+      }
+      const rows = await state.update('hidden', kind, (older = []) => {
+        const remaining = older.filter((item) => item.provider !== data.provider || item.id !== data.id);
+        if (data.hidden) remaining.push({ provider: data.provider, id: data.id, title: data.title.trim() });
+        return remaining;
+      });
+      return send(res, 200, rows);
     }
     if (req.method === 'POST' && path === '/api/auto-add') {
       const data = await body(req);

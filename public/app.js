@@ -7,7 +7,7 @@ const bulkPage = route === '/bulk' || route.startsWith('/bulk/');
 const kind = route.endsWith('/tv') ? 'series' : 'movie';
 const browsePath = kind === 'series' ? '/tv' : '/movies';
 const queuePath = '/bulk' + browsePath;
-const state = { provider: kind === 'series' ? 'tvdb' : 'tmdb', selected: new Map(), drafts: new Map(), edits: new Map(), existing: [], libraries: [], rows: [] };
+const state = { provider: kind === 'series' ? 'tvdb' : 'tmdb', selected: new Map(), drafts: new Map(), edits: new Map(), hidden: new Map(), existing: [], libraries: [], rows: [] };
 const titleKey = (title) => title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/\b(?:franchise|collection|universe)\s*$/, '').replace(/^the\s+/, '').replace(/[^a-z0-9]/g, '');
 const sourceKey = (url) => (url ?? '').replace(/^tmdb:\/\/collection\//, 'themoviedb.org/collection/')
@@ -34,6 +34,8 @@ const historyKey = 'silo-bulk-history-' + kind;
 const presets = new Map(stored(presetKey, []));
 const history = stored(historyKey, []);
 try { el('hide-existing').checked = localStorage.getItem('silo-hide-existing') === 'true'; } catch {}
+el('title-language').value = stored('silo-title-language-' + kind, 'en-nl');
+if (!el('title-language').value) el('title-language').value = 'en-nl';
 
 async function api(route, options = {}) {
   const response = await fetch('/api/' + route, options);
@@ -48,8 +50,8 @@ const post = (route, body) => api(route, {
 const requestFor = (item, libraryIds) => ({ provider: item.provider, id: item.id, kind, libraryIds });
 const matchesFor = (item) => state.existing.filter((collection) => {
   if (!isCurrentKind(collection) && !collection.libraryIds.some((id) => state.libraries.some((lib) => lib.id === id && lib.type === 'mixed'))) return false;
-  const key = titleKey(item.title);
-  return sourceKey(collection.sourceUrl) === sourceKey(item.url) || (key && titleKey(collection.title) === key);
+  const keys = [item.title, item.originalTitle].filter(Boolean).map(titleKey).filter(Boolean);
+  return sourceKey(collection.sourceUrl) === sourceKey(item.url) || keys.includes(titleKey(collection.title));
 });
 function isCurrentKind(collection) {
   if (collection.sourceUrl?.includes('themoviedb.org/collection/')) return kind === 'movie';
@@ -91,15 +93,56 @@ function drawRows() {
         edit.title = collection.title;
         row.append(edit);
       }
+      const hide = action('Hide', () => changeHidden(item, true, hide), 'hide-franchise');
+      hide.setAttribute('aria-label', 'Hide ' + item.title);
+      hide.disabled = !state.hiddenReady;
+      row.append(hide);
     }
     target.append(row);
   }
-  if (state.rows.length && !visible.length) target.append(create('p', 'All results are already in Silo.'));
+  if (state.rows.length && !visible.length) target.append(create('p', 'No visible results on these pages.'));
   drawQueue();
 }
 function visibleRows() {
-  if (state.provider === 'silo' || !el('hide-existing').checked) return state.rows;
-  return state.rows.filter((item) => !matchesFor(item).length);
+  if (state.provider === 'silo') return state.rows;
+  return state.rows.filter((item) => !state.hidden.has(itemKey(item)) &&
+    (!el('hide-existing').checked || !matchesFor(item).length));
+}
+
+async function loadHidden() {
+  try {
+    state.hidden = new Map((await api('hidden-franchises?' + params({ kind }))).map((item) => [itemKey(item), item]));
+    state.hiddenReady = true;
+    drawHidden();
+    drawRows();
+  } catch (error) { status('hidden-status', error.message); }
+}
+
+function drawHidden() {
+  el('hidden-franchises').hidden = state.provider === 'silo' || !state.hidden.size;
+  status('hidden-summary', 'Hidden franchises (' + state.hidden.size + ')');
+  const rows = [...state.hidden.values()].sort((a, b) => sortedTitles.compare(a.title, b.title));
+  el('hidden-rows').replaceChildren(...rows.map((item) => {
+    const row = create('div');
+    row.className = 'queue-row';
+    const restore = action('Restore', () => changeHidden(item, false, restore));
+    restore.setAttribute('aria-label', 'Restore ' + item.title);
+    row.append(create('span', item.title), create('small', item.provider === 'tmdb' ? 'TMDb' : 'TheTVDB'), restore);
+    return row;
+  }));
+}
+
+async function changeHidden(item, hidden, button) {
+  button.disabled = true;
+  try {
+    await post('hidden-franchises', { kind, provider: item.provider, id: item.id, title: item.title, hidden });
+    if (hidden) state.hidden.set(itemKey(item), item);
+    else state.hidden.delete(itemKey(item));
+    drawHidden();
+    drawRows();
+    status('hidden-status', item.title + (hidden ? ' hidden.' : ' restored.'));
+  } catch (error) { status('hidden-status', error.message); }
+  finally { button.disabled = false; }
 }
 
 async function listFranchises(reset) {
@@ -110,6 +153,7 @@ async function listFranchises(reset) {
     state.cursor = 0;
     state.query = el('franchise-query').value.trim();
     state.sort = el('franchise-sort').value;
+    state.language = el('title-language').value;
     state.rows = [];
     drawRows();
   }
@@ -126,7 +170,8 @@ async function listFranchises(reset) {
       }
       result = { items };
     } else {
-      result = await api('franchises?' + params({ provider: state.provider, kind, q: state.query, page: state.page, cursor: state.cursor, sort: state.sort }));
+      result = await api('franchises?' + params({ provider: state.provider, kind, q: state.query, page: state.page,
+        cursor: state.cursor, sort: state.sort, language: state.language }));
     }
     if (state.franchiseRun !== run) return;
     state.rows.push(...result.items);
@@ -1201,6 +1246,10 @@ el('more-franchises').onclick = () => { state.page++; listFranchises(false); };
 el('poster-form').onsubmit = (event) => { event.preventDefault(); listPosters(true); };
 el('franchise-form').onsubmit = (event) => { event.preventDefault(); listFranchises(true); };
 el('franchise-sort').onchange = () => listFranchises(true);
+el('title-language').onchange = () => {
+  store('silo-title-language-' + kind, el('title-language').value);
+  listFranchises(true);
+};
 el('hide-existing').onchange = () => {
   try { localStorage.setItem('silo-hide-existing', String(el('hide-existing').checked)); } catch {}
   drawRows();
@@ -1239,6 +1288,8 @@ function updateSortOptions() {
   el('sort-popular').disabled = !available;
   if (!available && el('franchise-sort').value === 'popular') el('franchise-sort').value = 'default';
   el('hide-existing-field').hidden = state.provider === 'silo';
+  el('title-language-field').hidden = state.provider === 'silo';
+  drawHidden();
   el('silo-order').hidden = state.provider !== 'silo';
   el('collection-health').hidden = state.provider !== 'silo';
   if (state.provider === 'silo') drawCollectionHealth();
@@ -1260,6 +1311,9 @@ if (bulkPage) {
   if (!el('bulk-poster-source').value) el('bulk-poster-source').value = 'all';
   el('bulk-poster-source').onchange = () => store('silo-bulk-creator-' + kind, el('bulk-poster-source').value);
   drawQueue();
-} else void listFranchises(true);
+} else {
+  void listFranchises(true);
+  void loadHidden();
+}
 void loadLibraries().then(refreshExisting);
 void loadServerQueue();
