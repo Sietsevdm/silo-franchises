@@ -132,3 +132,52 @@ test('poster selections stay bound to their allowlisted creator', async (t) => {
   assert.deepEqual(requested, ['XDM', 'mikenobbs']);
   assert.deepEqual(await source.galleryPage('mikenobbs', 2), { items: [], more: false });
 });
+
+test('TMDb falls back to the previous public export and resolves collection artwork separately', async (t) => {
+  const exports = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const target = new URL(url);
+    if (target.hostname === 'files.tmdb.org') {
+      assert.equal(options.headers.Authorization, undefined);
+      exports.push(target.pathname);
+      if (exports.length === 1) return new Response(null, { status: 403 });
+      return new Response('{"id":10,"name":"Star Wars Collection"}\n');
+    }
+    assert.equal(target.pathname, '/3/collection/10');
+    assert.equal(options.headers.Authorization, 'Bearer fake-tmdb-token');
+    return Response.json({ name: 'Star Wars Collection', overview: 'Franchise description', backdrop_path: '/star-wars.jpg',
+      parts: [{ id: 11, title: 'Star Wars', release_date: '1977-05-25' }] });
+  });
+  const p = providers('fake-tmdb-token');
+  assert.equal((await p.movieIndex())[0].title, 'Star Wars Collection');
+  assert.equal(exports.length, 2);
+  assert.notEqual(exports[0], exports[1]);
+  const metadata = await p.metadata('tmdb:10:movie');
+  assert.equal(metadata.description, 'Franchise description');
+  assert.equal(metadata.backdrop, 'https://image.tmdb.org/t/p/w1280/star-wars.jpg');
+});
+
+test('new Silo collections get the selected description and TMDb backdrop', async (t) => {
+  const routes = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const target = new URL(url);
+    if (target.hostname !== 'example.test') {
+      assert.equal(options.headers.Authorization, undefined);
+      return new Response(Uint8Array.from([255, 216, 255, 224]));
+    }
+    routes.push([options.method, target.pathname]);
+    if (options.method === 'GET') return Response.json({ items: [] });
+    if (options.method === 'POST') {
+      assert.equal(JSON.parse(options.body).description, 'A TMDb description');
+      return Response.json({ id: 'example', title: 'Example' }, { status: 201 });
+    }
+    if (target.pathname.includes('/items/')) return new Response(null, { status: 204 });
+    assert.equal(options.body.get('image').type, 'image/jpeg');
+    return Response.json({ id: 'example' });
+  });
+  const silo = siloClient('https://example.test', 'fake-silo-key');
+  await silo.publish({ detail: { provider: 'tmdb', id: '10' }, title: 'Example', libraryIds: ['1'],
+    members: [{ content_id: 'm1' }], poster: { image: 'https://images.theposterdb.com/poster.jpg' },
+    description: 'A TMDb description', backdrop: 'https://image.tmdb.org/t/p/w1280/art.jpg' });
+  assert.deepEqual(routes.at(-1), ['PUT', '/api/v2/admin/collections/example/backdrop']);
+});
