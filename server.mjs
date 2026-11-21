@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { AppError, galleryUrl, normalize, posterSources, providers } from './providers.mjs';
-import { matchMembers, siloClient } from './silo.mjs';
+import { eligibleCollection, matchMembers, siloClient } from './silo.mjs';
 
 const env = process.env;
 if (!env.APP_PASSWORD || env.APP_PASSWORD.length < 16) throw new Error('Set APP_PASSWORD to at least 16 characters.');
@@ -44,14 +44,20 @@ function collectionId(id) {
   return id;
 }
 
-function filter(items, query, number, size) {
+const titles = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+function filter(items, query, number, size, sort) {
   const normalized = normalize(query);
   const terms = normalized.split(' ').filter(Boolean);
   const hits = items.filter((item) => {
     const title = normalize(item.title);
     return terms.every((term) => title.includes(term));
   });
-  if (normalized) hits.sort((a, b) => Number(!normalize(a.title).startsWith(normalized)) -
+  if (sort === 'title-asc' || sort === 'title-desc') {
+    const direction = sort === 'title-asc' ? 1 : -1;
+    hits.sort((a, b) => direction * titles.compare(a.title, b.title));
+  } else if (sort === 'popular') {
+    hits.sort((a, b) => b.stars - a.stars || titles.compare(a.title, b.title));
+  } else if (normalized) hits.sort((a, b) => Number(!normalize(a.title).startsWith(normalized)) -
     Number(!normalize(b.title).startsWith(normalized)));
   return { items: hits.slice((number - 1) * size, number * size), more: hits.length > number * size, total: hits.length };
 }
@@ -90,8 +96,8 @@ async function preview(data) {
   return { detail, libraryIds, libraryNames, matches: matchMembers(detail.members, await silo.catalog(libraryIds, data.kind)) };
 }
 
-async function browseTVDb(query, cursor, kind) {
-  const candidates = filter(await source.tvIndex(), query, 1, Number.MAX_SAFE_INTEGER).items;
+async function browseTVDb(query, cursor, kind, sort) {
+  const candidates = filter(await source.tvIndex(), query, 1, Number.MAX_SAFE_INTEGER, sort).items;
   const size = 12;
   const matches = [];
   let next = cursor;
@@ -145,13 +151,14 @@ createServer(async (req, res) => {
         const query = (input.get('q') ?? '').slice(0, 150);
         const provider = input.get('provider');
         const kind = input.get('kind');
+        const sort = input.get('sort');
         const number = page(input);
         const cursor = Number(input.get('cursor') || 0);
         if (provider === 'tvdb' && ['movie', 'series'].includes(kind) && Number.isSafeInteger(cursor) && cursor >= 0) {
-          return send(res, 200, await browseTVDb(query, cursor, kind));
+          return send(res, 200, await browseTVDb(query, cursor, kind, sort));
         }
         if (provider !== 'tmdb' || kind !== 'movie') throw new AppError(400, 'Choose a source for this media type.');
-        return send(res, 200, filter(await source.movieIndex(), query, number, 48));
+        return send(res, 200, filter(await source.movieIndex(), query, number, 48, sort === 'popular' ? null : sort));
       }
       if (path === '/api/detail') return send(res, 200, await source.details(key(input.get('provider'), input.get('id'), input.get('kind'))));
       if (path === '/api/metadata') return send(res, 200, await source.metadata(key(input.get('provider'), input.get('id'), input.get('kind'))));
@@ -175,12 +182,13 @@ createServer(async (req, res) => {
       const { matches, libraryIds, libraryNames } = await preview(await body(req));
       return send(res, 200, matches.map(({ match, title, type, year, basis, libraryIds: found = [] }) => ({
         title, type, year, basis, contentId: match?.content_id, localTitle: match?.title,
+        libraryIds: libraryIds.filter((id) => found.includes(id)),
         libraries: libraryIds.filter((id) => found.includes(id)).map((id) => libraryNames.get(id)),
       })));
     }
     if (req.method === 'POST' && path === '/api/edit') {
       const data = await body(req);
-      const id = collectionId(data.id);
+      const id = collectionId(data.collectionId);
       const title = typeof data.title === 'string' ? data.title.trim() : '';
       if (!title || title.length > 150 || typeof data.description !== 'string' || data.description.length > 8000 ||
         typeof data.etag !== 'string' || !data.etag || data.etag === '*') {
@@ -192,8 +200,20 @@ createServer(async (req, res) => {
         poster = await source.posterById(data.posterId, data.posterCreator);
         if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
       }
-      const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag });
-      return send(res, 200, publicCollection(updated));
+      let members = [];
+      if (data.contentIds != null) {
+        if (!Array.isArray(data.contentIds) || data.contentIds.length > 1000 || data.contentIds.some((id) => typeof id !== 'string')) {
+          throw new AppError(400, 'Select valid library titles.');
+        }
+        if (data.contentIds.length) {
+          const { matches } = await preview(data);
+          const available = new Map(matches.filter((item) => item.match).map((item) => [item.match.content_id, item.match]));
+          members = [...new Set(data.contentIds)].map((itemId) => available.get(itemId));
+          if (members.some((item) => !item)) throw new AppError(409, 'Library matches changed. Preview again before saving.');
+        }
+      }
+      const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members });
+      return send(res, 200, { ...publicCollection(updated), added: updated.added });
     }
     if (req.method === 'POST' && path === '/api/import') {
       const data = await body(req);
@@ -204,10 +224,12 @@ createServer(async (req, res) => {
         (data.description != null && (typeof data.description !== 'string' || data.description.length > 8000))) {
         throw new AppError(400, 'Choose a title, a poster, and at least one matched library item.');
       }
-      const { detail, libraryIds, matches } = await preview(data);
+      const { detail, libraryIds, libraryNames, matches } = await preview(data);
       const permitted = new Map(matches.filter((m) => m.match).map((m) => [m.match.content_id, m.match]));
       const members = [...new Set(data.contentIds)].map((id) => permitted.get(id));
       if (members.some((m) => !m)) throw new AppError(409, 'Library matches changed. Preview again before importing.');
+      const eligible = eligibleCollection(libraryIds, members);
+      if (!eligible.libraryIds.length) throw new AppError(422, 'Select at least two matched titles in the same library to create a collection.');
       const poster = await source.posterById(data.posterId, data.posterCreator);
       if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
       let metadata = detail.metadata;
@@ -216,10 +238,11 @@ createServer(async (req, res) => {
         try { metadata = await source.metadata(key(data.provider, data.id, data.kind)); }
         catch { warning = 'TMDb metadata could not be loaded.'; }
       }
-      const result = await silo.publish({ detail, title, libraryIds, members, poster,
+      const result = await silo.publish({ detail, title, libraryIds: eligible.libraryIds, members: eligible.members, poster,
         description: data.description ?? metadata?.description?.slice(0, 8000),
         backdrop: data.includeBackdrop === false ? '' : metadata?.backdrop });
-      return send(res, 201, { ...result, warning: result.warning ?? warning });
+      return send(res, 201, { ...result, warning: result.warning ?? warning,
+        skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)) });
     }
     return send(res, 404, { error: 'Page not found.' });
   } catch (error) {
