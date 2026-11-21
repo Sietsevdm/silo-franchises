@@ -19,6 +19,7 @@ function franchiseFromCollection(collection) {
 const itemKey = ({ provider, id }) => `${provider}:${id}`;
 const inputCheck = (value, selected, action) => Object.assign(create('input'), { type: 'checkbox', value, checked: selected, onchange: action });
 const sortedTitles = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+try { el('hide-existing').checked = localStorage.getItem('silo-hide-existing') === 'true'; } catch {}
 
 async function api(route, options = {}) {
   const response = await fetch('/api/' + route, options);
@@ -53,7 +54,8 @@ function action(text, run, className = '') {
 function drawRows() {
   const target = el('franchises');
   target.replaceChildren();
-  for (const item of state.rows) {
+  const visible = visibleRows();
+  for (const item of visible) {
     const row = create('div');
     row.className = 'franchise-row';
     if (item.provider === 'silo') {
@@ -78,7 +80,12 @@ function drawRows() {
     }
     target.append(row);
   }
+  if (state.rows.length && !visible.length) target.append(create('p', 'All results are already in Silo.'));
   drawQueue();
+}
+function visibleRows() {
+  if (state.provider === 'silo' || !el('hide-existing').checked) return state.rows;
+  return state.rows.filter((item) => !matchesFor(item).length);
 }
 
 async function listFranchises(reset) {
@@ -97,7 +104,7 @@ async function listFranchises(reset) {
     if (state.provider === 'silo' && state.existingError) throw new Error(state.existingError);
     let result;
     if (state.provider === 'silo') {
-      const items = state.existing.filter((item) => isCurrentKind(item) && item.title.toLowerCase().includes(state.query.toLowerCase()))
+      const items = state.existing.filter((item) => item.browseable !== false && isCurrentKind(item) && item.title.toLowerCase().includes(state.query.toLowerCase()))
         .map((item) => ({ ...item, provider: 'silo' }));
       if (state.sort === 'title-asc' || state.sort === 'title-desc') {
         const direction = state.sort === 'title-asc' ? 1 : -1;
@@ -155,6 +162,12 @@ function openPanel(title, editing) {
   el('sync-field').hidden = true;
   el('sync-tmdb').checked = false;
   el('sync-note').hidden = true;
+  el('sort-silo').checked = false;
+  state.sortTouched = false;
+  state.customPosterRun = null;
+  el('custom-poster-url').value = '';
+  el('custom-poster-preview').disabled = false;
+  status('custom-poster-status', '');
   el('metadata-source').hidden = true;
   el('backdrop-field').hidden = true;
   el('include-backdrop').checked = kind === 'movie';
@@ -186,6 +199,8 @@ async function openFranchise(item) {
     for (const check of el('libraries').querySelectorAll('input')) check.checked = draft.libraryIds.includes(check.value);
     renderMatches(draft.matches, draft.contentIds);
     showPoster(draft.poster);
+    el('custom-poster-url').value = draft.poster?.customUrl ?? '';
+    el('sort-silo').checked = draft.sort === 'title';
     if (draft.description != null) {
       el('description').value = draft.description;
       state.descriptionDirty = true;
@@ -313,6 +328,7 @@ async function openExisting(item, franchise = null) {
     }
     el('collection-title').value = result.title;
     el('description').value = result.description;
+    el('sort-silo').checked = result.titleSort;
     const queued = state.edits.get(result.id);
     if (queued) {
       el('collection-title').value = queued.payload.title;
@@ -320,6 +336,11 @@ async function openExisting(item, franchise = null) {
       el('description').value = queued.payload.description;
       el('tv-backdrop-url').value = queued.payload.backdropUrl ?? '';
       showPoster(queued.poster);
+      el('custom-poster-url').value = queued.poster?.customUrl ?? '';
+      if (queued.payload.sort) {
+        state.sortTouched = true;
+        el('sort-silo').checked = queued.payload.sort === 'title';
+      }
       if (queued.backdrop) chooseBackdrop(queued.backdrop);
       if (state.editFranchise && queued.payload.contentIds?.length) renderMatches(queued.matches, queued.payload.contentIds);
     }
@@ -402,7 +423,7 @@ async function loadLibraries() {
   status('library-status', 'Connecting to Silo…');
   try {
     state.libraries = await api('libraries');
-    const eligible = state.libraries.filter((lib) => lib.type === 'mixed' || lib.type === (kind === 'movie' ? 'movies' : 'series'));
+    const eligible = state.libraries.filter((lib) => lib.previewKind === kind);
     for (const lib of eligible) {
       const label = create('label');
       label.append(inputCheck(lib.id, false, invalidateMatches), document.createTextNode(lib.name));
@@ -427,12 +448,41 @@ function posterImage(poster) {
   return Object.assign(create('img'), { src: poster.image, alt: poster.title, loading: 'lazy' });
 }
 function showPoster(poster) {
+  if (!poster?.customUrl) {
+    state.customPosterRun = null;
+    el('custom-poster-preview').disabled = false;
+    status('custom-poster-status', '');
+  }
   state.poster = poster;
   el('chosen-poster').replaceChildren(...(poster ? [posterImage(poster)] : []));
   status('poster-label', poster ? `${poster.title} · ${poster.creator}` : (state.editing ? 'Keeping current artwork' : 'No poster selected'));
   for (const element of el('posters').querySelectorAll('button')) element.setAttribute('aria-pressed', String(element.dataset.id === poster?.id));
   updateActions();
 }
+
+el('custom-poster-form').onsubmit = async (event) => {
+  event.preventDefault();
+  const url = el('custom-poster-url').value.trim();
+  if (!url) { status('custom-poster-status', 'Enter a direct public HTTPS poster URL.'); return; }
+  const run = state.customPosterRun = Symbol();
+  el('custom-poster-preview').disabled = true;
+  status('custom-poster-status', 'Loading poster…');
+  try {
+    const response = await fetch('/api/poster-preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Franchise-App': '1' },
+      body: JSON.stringify({ url }),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'The poster could not be loaded.');
+    const image = await response.blob();
+    if (state.customPosterRun !== run) return;
+    showPoster({ id: '', title: 'Custom poster', creator: 'Image URL', image: URL.createObjectURL(image), customUrl: url });
+    status('custom-poster-status', 'Custom poster selected.');
+  } catch (error) {
+    if (state.customPosterRun === run) status('custom-poster-status', error.message);
+  } finally {
+    if (state.customPosterRun === run) el('custom-poster-preview').disabled = false;
+  }
+};
 
 async function listPosters(reset) {
   const run = state.posterRun = Symbol();
@@ -471,13 +521,13 @@ function draftFor(item) {
     description: state.descriptionDirty || state.metadataLoaded ? el('description').value : undefined,
     includeBackdrop: el('include-backdrop').checked, selectedBackdrop: state.selectedBackdrop,
     backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
-    sync: el('sync-tmdb').checked };
+    sync: el('sync-tmdb').checked, sort: el('sort-silo').checked ? 'title' : undefined };
 }
 const ready = (draft) => !!draft?.poster &&
   [...libraryCounts(draft.matches, draft.contentIds, draft.libraryIds).values()].some((count) => count >= 2);
 const importDraft = (draft) => post('import', { provider: draft.provider, id: draft.id, kind: draft.kind,
-  libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, posterId: draft.poster.id,
-  posterCreator: draft.poster.creator, description: draft.description, includeBackdrop: draft.includeBackdrop,
+  libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, ...posterFields(draft.poster),
+  description: draft.description, includeBackdrop: draft.includeBackdrop, sort: draft.sort,
   backdropUrl: draft.backdropUrl, backdropPath: draft.includeBackdrop ? draft.selectedBackdrop?.path : undefined, sync: draft.sync });
 
 function editDraft(editing) {
@@ -488,7 +538,8 @@ function editDraft(editing) {
     backdrop: state.selectedBackdrop, matches: state.matches,
     payload: {
       collectionId: editing.id, etag: editing.etag, title: el('collection-title').value,
-      description: el('description').value, posterId: state.poster?.id, posterCreator: state.poster?.creator,
+      description: el('description').value, ...posterFields(state.poster),
+      sort: state.sortTouched ? (el('sort-silo').checked ? 'title' : 'source') : undefined,
       kind, backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
       ...(state.selectedBackdrop && state.artworkFranchise
         ? { ...requestFor(state.artworkFranchise, libraryIds), backdropPath: state.selectedBackdrop.path } : {}),
@@ -497,9 +548,13 @@ function editDraft(editing) {
     },
   };
 }
+function posterFields(poster) {
+  if (poster?.customUrl) return { posterUrl: poster.customUrl };
+  return poster ? { posterId: poster.id, posterCreator: poster.creator } : {};
+}
 
 function drawQueue() {
-  const available = state.rows.filter((item) => item.provider !== 'silo' && !matchesFor(item).length);
+  const available = visibleRows().filter((item) => item.provider !== 'silo' && !matchesFor(item).length);
   const all = el('select-visible');
   const visibleSelected = available.filter((item) => state.selected.has(itemKey(item))).length;
   all.checked = available.length > 0 && visibleSelected === available.length;
@@ -535,7 +590,7 @@ function drawQueue() {
 }
 
 el('select-visible').onchange = (event) => {
-  for (const item of state.rows.filter((item) => item.provider !== 'silo' && !matchesFor(item).length)) {
+  for (const item of visibleRows().filter((item) => item.provider !== 'silo' && !matchesFor(item).length)) {
     const key = itemKey(item);
     if (event.target.checked) state.selected.set(key, item);
     else { state.selected.delete(key); state.drafts.delete(key); }
@@ -657,6 +712,8 @@ el('publish').onclick = async () => {
     await refreshExisting();
     if (editing && state.editing === editing) {
       state.editing = await api('collection?' + params({ id: editing.id }));
+      state.sortTouched = false;
+      el('sort-silo').checked = state.editing.titleSort;
       showPoster(null);
       chooseBackdrop(null);
       el('tv-backdrop-url').value = '';
@@ -680,8 +737,13 @@ el('more-franchises').onclick = () => { state.page++; listFranchises(false); };
 el('poster-form').onsubmit = (event) => { event.preventDefault(); listPosters(true); };
 el('franchise-form').onsubmit = (event) => { event.preventDefault(); listFranchises(true); };
 el('franchise-sort').onchange = () => listFranchises(true);
+el('hide-existing').onchange = () => {
+  try { localStorage.setItem('silo-hide-existing', String(el('hide-existing').checked)); } catch {}
+  drawRows();
+};
 el('collection-title').oninput = () => { status('selection-title', el('collection-title').value || 'Your collection'); updateActions(); };
 el('description').oninput = () => { state.descriptionDirty = true; };
+el('sort-silo').onchange = () => { state.sortTouched = true; };
 el('sync-tmdb').onchange = (event) => {
   el('sync-note').hidden = !event.target.checked;
   for (const input of el('matches').querySelectorAll('input')) {
@@ -705,6 +767,7 @@ function updateSortOptions() {
   el('sort-popular').hidden = !available;
   el('sort-popular').disabled = !available;
   if (!available && el('franchise-sort').value === 'popular') el('franchise-sort').value = 'default';
+  el('hide-existing-field').hidden = state.provider === 'silo';
 }
 updateSortOptions();
 el(kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
