@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { galleryUrl, parseGallery, parseTVIndex, parseTVMembers, providers } from './providers.mjs';
 import { eligibleCollection, matchMembers, siloClient } from './silo.mjs';
+import { publicArtworkUrl } from './remote-artwork.mjs';
 
 test('extracts official lists, franchise members and attributed gallery cards', () => {
   assert.equal(parseTVIndex('<h3><a href="/lists/power">Power Franchise</a></h3>')[0].id, 'power');
@@ -242,4 +243,64 @@ test('new Silo collections get the selected description and TMDb backdrop', asyn
     members: [{ content_id: 'm1' }], poster: { image: 'https://images.theposterdb.com/poster.jpg' },
     description: 'A TMDb description', backdrop: 'https://image.tmdb.org/t/p/w1280/art.jpg' });
   assert.deepEqual(routes.at(-1), ['PUT', '/api/v2/admin/collections/example/backdrop']);
+});
+
+test('TV franchise metadata comes from TheTVDB and leaves the backdrop blank', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const target = new URL(url);
+    assert.equal(target.hostname, 'thetvdb.com');
+    if (target.pathname === '/lists') return new Response('<h3><a href="/lists/power">Power Franchise</a></h3>');
+    return new Response('<div class="change_translation_text" data-language="eng"><p>Power &amp; its spin-offs.</p></div>' +
+      '<h3><a href="/series/power">Power</a></h3>');
+  });
+  assert.deepEqual(await providers().metadata('tvdb:power:series'), {
+    kind: 'tvdb', title: 'Power Franchise', description: 'Power & its spin-offs.', backdrop: '', url: 'https://thetvdb.com/lists/power',
+  });
+});
+
+test('movie backdrop choices cover each film and deduplicate shared images', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const path = new URL(url).pathname;
+    if (path === '/3/collection/10') return Response.json({ name: 'Example', parts: [{ id: 11, title: 'First' }, { id: 12, title: 'Second' }] });
+    const second = path === '/3/movie/12';
+    return Response.json({ title: second ? 'Second' : 'First', backdrop_path: '/shared.jpg',
+      images: { backdrops: [{ file_path: second ? '/second.jpg' : '/first.jpg' }] } });
+  });
+  const result = await providers('fake-token').backdrops('tmdb:10:movie');
+  assert.deepEqual(result.items.map(({ path, film }) => [path, film]), [
+    ['/shared.jpg', 'First'], ['/first.jpg', 'First'], ['/second.jpg', 'Second'],
+  ]);
+});
+
+test('custom backdrop inputs require a direct HTTPS URL without a local host or credentials', () => {
+  assert.equal(publicArtworkUrl('https://images.example.com/backdrop.jpg').hostname, 'images.example.com');
+  for (const url of ['http://images.example.com/backdrop.jpg', 'https://127.0.0.1/image',
+    'https://storage.internal/image', 'https://user:password@images.example.com/image', 'https://images.example.com:4433/image']) {
+    assert.throws(() => publicArtworkUrl(url), { status: 400 });
+  }
+});
+
+test('opt-in TMDb sync creates a native Silo collection and lets Silo populate it', async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const target = new URL(url);
+    if (target.hostname === 'images.theposterdb.com') return new Response(Uint8Array.from([255, 216, 255, 224]));
+    calls.push([options.method, target.pathname]);
+    if (options.method === 'GET') return Response.json({ items: [] });
+    if (target.pathname === '/api/v2/admin/collections') {
+      const data = JSON.parse(options.body);
+      assert.equal(data.collection_type, 'tmdb');
+      assert.equal(data.source_url, 'tmdb://collection/10');
+      assert.deepEqual(data.source_config, { mode: 'tmdb_collection', collection_id: 10 });
+      assert.equal(data.sync_schedule, '0 4 * * *');
+      return Response.json({ id: 'new', title: 'Example' }, { status: 201 });
+    }
+    return Response.json({ status: 'success' });
+  });
+  const silo = siloClient('https://example.test/', 'fake-silo-key');
+  const result = await silo.publish({ detail: { provider: 'tmdb', id: '10' }, title: 'Example', libraryIds: ['1'],
+    members: [{ content_id: 'm1' }, { content_id: 'm2' }], poster: { image: 'https://images.theposterdb.com/poster.jpg' }, sync: true });
+  assert.equal(result.synced, true);
+  assert.deepEqual(calls.slice(-2), [['PUT', '/api/v2/admin/collections/new/poster'], ['POST', '/api/v2/admin/collections/new/sync']]);
+  assert.equal(calls.some(([, path]) => path.includes('/items/')), false);
 });
