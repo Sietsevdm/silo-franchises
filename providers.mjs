@@ -53,6 +53,12 @@ export async function bytes(response, limit = maxBytes) {
 const html = async (url, service) => (await bytes(await request(url, {}, service))).toString('utf8');
 export const normalize = (value) => value.normalize('NFKD').replace(/\p{M}/gu, '')
   .toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+const excludedTitleScripts = [
+  'Han', 'Hiragana', 'Katakana', 'Hangul', 'Bopomofo', 'Cyrillic', 'Thai', 'Lao', 'Khmer', 'Myanmar',
+  'Tibetan', 'Mongolian', 'Devanagari', 'Bengali', 'Tamil', 'Telugu',
+];
+const excludedTitleCharacters = new RegExp(`[${excludedTitleScripts.map((script) => `\\p{Script=${script}}`).join('')}]`, 'u');
+export const allowedFranchiseTitle = (title) => !excludedTitleCharacters.test(title);
 
 function decode(value) {
   const named = { amp: '&', apos: "'", quot: '"', lt: '<', gt: '>', nbsp: ' ', rsquo: '’', ndash: '–' };
