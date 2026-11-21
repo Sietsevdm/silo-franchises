@@ -49,6 +49,8 @@
           <h3 id="batch-title">Bulk queue</h3>
           <div class="line"><button id="prepare-bulk" type="button" disabled>Prepare selected</button><button id="dry-bulk" type="button" disabled>Preview bulk changes</button><button class="accent" id="import-bulk" type="button" disabled>Apply ready</button></div>
           <p id="bulk-status" role="status"></p><div id="queue"></div>
+          <div class="line"><button id="load-server-queue" type="button">Load saved queue</button></div>
+          <p id="server-queue-status" role="status"></p>
           <ul id="bulk-plan" hidden></ul>
           <details><summary>Bulk history</summary><div id="bulk-history"></div></details>
         </section>
@@ -104,10 +106,11 @@
             <p id="sync-note" class="field-note" hidden>Silo follows the full TMDb collection and syncs daily. Individual title selection applies to manual collections.</p>
             <div id="request-missing-field" hidden>
               <label class="check-line"><input id="request-missing" type="checkbox"> Request missing titles after creating this collection</label>
-              <p class="field-note">Uses Silo Requests and its approval settings. Add fulfilled titles to manual collections from the editor.</p>
+              <label id="auto-add-field" class="check-line" hidden><input id="auto-add-requested" type="checkbox"> Add requested titles automatically when they reach a collection library</label>
+              <p class="field-note">Uses Silo Requests and its approval settings.</p>
             </div>
           </div>
-          <div class="publish"><button class="accent" id="publish" type="button" disabled>Add to Silo</button> <button id="queue-current" type="button" disabled>Save to bulk queue</button><p id="publish-status" role="status"></p></div>
+          <div class="publish"><div class="line"><button class="accent" id="publish" type="button" disabled>Add to Silo</button><button id="queue-current" type="button" disabled>Save to bulk queue</button><button id="undo-edit" type="button" hidden>Undo last edit</button></div><p id="publish-status" role="status"></p></div>
         </div>
       </section>
       <aside class="panel artwork" aria-labelledby="poster-title">

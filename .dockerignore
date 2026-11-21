@@ -5,5 +5,6 @@
 !silo.mjs
 !remote-artwork.mjs
 !poster-cache.mjs
+!app-state.mjs
 !public/
 !public/**

@@ -119,13 +119,14 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
     return withTag ? { value, etag: response.headers.get('etag') } : value;
   };
   async function requestMissingMedia(candidates) {
-    const report = { requested: [], skipped: [], failed: [] };
+    const report = { requested: [], skipped: [], failed: [], tracking: [] };
     for (const [index, { title, type, tmdb, year }] of candidates.entries()) {
       try {
-        await call('/requests', { method: 'POST', mediaRequest: true, body: {
+        const value = await call('/requests', { method: 'POST', mediaRequest: true, body: {
           title, media_type: type, tmdb_id: Number(tmdb), year: Number(year) || undefined,
         } });
         report.requested.push(title);
+        report.tracking.push({ title, type, tmdb, requestId: value?.id, status: value?.state ?? 'submitted' });
       } catch (error) {
         if (error.status === 409) report.skipped.push(title);
         else {
@@ -138,10 +139,12 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
             break;
           }
         }
+        report.tracking.push({ title, type, tmdb, status: error.status === 409 ? 'already requested or available' : 'submission failed' });
       }
     }
     return report;
   }
+  const mediaRequestStatus = (id) => call('/requests/' + encodeURIComponent(id), { mediaRequest: true });
   let libraryCache;
   function libraries() {
     if (libraryCache?.expires > Date.now()) return libraryCache.pending;
@@ -198,15 +201,15 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
   const collections = async () => (await call(collectionsPath)).items;
   const collectionPath = (id) => `${collectionsPath}/${encodeURIComponent(id)}`;
   const getCollection = (id) => call(collectionPath(id), { withTag: true });
-  async function collectionMemberIds(id) {
-    const members = new Set();
+  async function collectionMembership(id) {
+    const members = new Map();
     const cursors = new Set();
     let cursor;
     do {
       const query = new URLSearchParams({ limit: '200' });
       if (cursor) query.set('cursor', cursor);
       const result = await call(collectionPath(id) + '/items?' + query);
-      for (const item of result.items) members.add(item.media_item_id);
+      for (const item of result.items) members.set(item.media_item_id, item.position);
       cursor = result.page?.has_more ? result.page.next_cursor : null;
       if (result.page?.has_more && (!cursor || cursors.has(cursor))) {
         throw new AppError(502, 'Silo returned an invalid collection cursor.');
@@ -214,6 +217,16 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
       if (cursor) cursors.add(cursor);
     } while (cursor);
     return members;
+  }
+  const collectionMemberIds = async (id) => new Set((await collectionMembership(id)).keys());
+
+  async function appendAvailable(id, contentIds) {
+    const members = await collectionMembership(id);
+    let position = [...members.values()].reduce((next, current) => Math.max(next, current + 1), 0);
+    for (const contentId of new Set(contentIds)) {
+      if (members.has(contentId)) continue;
+      await call(collectionPath(id) + '/items/' + encodeURIComponent(contentId), { method: 'PUT', body: { position: position++ } });
+    }
   }
   async function sortCollections(libraryId) {
     const query = new URLSearchParams({ library_id: libraryId });
@@ -246,13 +259,37 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
 
   async function prepareArtwork(url, label, custom = false) {
     const image = custom ? await downloadPublicArtwork(url) : await bytes(await request(url, {}, label));
+    return artworkForm(image);
+  }
+  function artworkForm(image) {
     const [mime, extension] = imageType(image);
     const form = new FormData();
     form.append('image', new Blob([image], { type: mime }), `artwork.${extension}`);
     return form;
   }
 
-  async function updateCollection({ id, title, description, poster, etag, members = [], backdrop, customBackdrop = false, sort }) {
+  async function snapshotArtwork(value) {
+    if (!value) return null;
+    const url = new URL(value, root);
+    const image = url.origin === root.origin
+      ? await bytes(await request(url, { headers: { Authorization: `Bearer ${token}` } }, 'Silo artwork'))
+      : await downloadPublicArtwork(url.href);
+    imageType(image);
+    return image.toString('base64');
+  }
+  async function restoreCollection(id, snapshot, expected, onPatched) {
+    const { etag } = await getCollection(id);
+    if (!etag || etag !== expected) throw new AppError(412, 'This collection changed in Silo after the edit.');
+    const path = collectionPath(id);
+    const { artwork, ...fields } = snapshot;
+    await call(path, { method: 'PATCH', etag, body: fields });
+    onPatched();
+    for (const [type, image] of Object.entries(artwork)) {
+      if (image) await call(path + '/' + type, { method: 'PUT', body: artworkForm(Buffer.from(image, 'base64')) });
+      else await call(path + '/image?' + new URLSearchParams({ type }), { method: 'DELETE' });
+    }
+  }
+  async function updateCollection({ id, title, description, poster, etag, members = [], backdrop, customBackdrop = false, sort, beforeChange, onPatched }) {
     const form = poster ? await prepareArtwork(poster.image, 'Poster artwork', poster.custom) : null;
     const backdropForm = backdrop ? await prepareArtwork(backdrop, 'Backdrop', customBackdrop) : null;
     const current = await getCollection(id);
@@ -285,7 +322,14 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
       } while (cursor);
       additions = members.filter((item) => !existing.has(item.content_id));
     }
+    if (beforeChange) {
+      const artwork = {};
+      if (form) artwork.poster = await snapshotArtwork(current.value.poster_is_collage ? null : current.value.poster_url);
+      if (backdropForm) artwork.backdrop = await snapshotArtwork(current.value.backdrop_url);
+      await beforeChange({ title: current.value.title, description: current.value.description ?? '', artwork });
+    }
     const updated = await call(path, { method: 'PATCH', etag, body: { title, description, sort_config: sortConfig(sort) } });
+    onPatched?.();
     for (const item of additions) {
       try { await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position: position++ } }); }
       catch (error) { throw new AppError(error.status ?? 502, 'Collection details were saved, but adding titles was interrupted. Reopen the collection and retry.'); }
@@ -366,5 +410,6 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
       active.delete(slug);
     }
   }
-  return { libraries, catalog, publish, planImport, collections, getCollection, collectionMemberIds, updateCollection, sortCollections, requestMissingMedia };
+  return { libraries, catalog, publish, planImport, collections, getCollection, collectionMemberIds, appendAvailable,
+    updateCollection, restoreCollection, sortCollections, requestMissingMedia, mediaRequestStatus };
 }

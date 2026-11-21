@@ -5,6 +5,7 @@ import { allowedFranchiseTitle, AppError, galleryUrl, normalize, posterSources, 
 import { eligibleCollection, imageType, matchMembers, previewKind, siloClient } from './silo.mjs';
 import { downloadPublicArtwork, publicArtworkUrl } from './remote-artwork.mjs';
 import { posterCache } from './poster-cache.mjs';
+import { appState } from './app-state.mjs';
 
 const env = process.env;
 if (!env.APP_PASSWORD || env.APP_PASSWORD.length < 16) throw new Error('Set APP_PASSWORD to at least 16 characters.');
@@ -12,12 +13,77 @@ const username = env.APP_USER || 'admin';
 const digest = (value) => createHash('sha256').update(value).digest();
 const auth = digest(`${username}:${env.APP_PASSWORD}`);
 const source = providers(env.TMDB_READ_TOKEN);
+const state = await appState(env.POSTER_INDEX_DIR);
 const posterIndex = await posterCache(posterSources, source.posterIndex, env.POSTER_INDEX_DIR);
 void posterIndex.refresh();
 setInterval(() => void posterIndex.refresh(), 30 * 60 * 1000).unref();
 const silo = siloClient(env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz', env.SILO_API_KEY, {
   requestKey: env.SILO_REQUEST_API_KEY, requestProfileId: env.SILO_REQUEST_PROFILE_ID,
 });
+const activeCollections = new Set();
+async function lockCollection(id, run) {
+  if (activeCollections.has(id)) throw new AppError(409, 'This collection is being updated. Try again shortly.');
+  activeCollections.add(id);
+  try { return await run(); }
+  finally { activeCollections.delete(id); }
+}
+
+const terminalRequests = new Set(['available', 'failed', 'declined', 'cancelled', 'submission failed']);
+async function refreshTracked(entry) {
+  return lockCollection(entry.id, () => state.update('requests', entry.id, async (current) => {
+    if (!current?.titles?.length) return current;
+    const needsMembership = current.autoAdd && current.titles.some((item) =>
+      !item.added && !['declined', 'cancelled', 'failed', 'submission failed'].includes(item.status));
+    let membership;
+    let catalog;
+    if (needsMembership) {
+      try {
+        const { value } = await silo.getCollection(entry.id);
+        const ids = publicCollection(value).libraryIds.filter((id) => current.libraryIds.includes(id));
+        if (ids.length && value.collection_type === 'manual') {
+          [membership, catalog] = await Promise.all([silo.collectionMemberIds(entry.id), silo.catalog(ids, current.kind)]);
+        }
+        delete current.autoAddError;
+      } catch (error) { current.autoAddError = 'Could not check assigned libraries (HTTP ' + (error.status ?? 502) + ').'; }
+    }
+    const additions = [];
+    for (const item of current.titles) {
+      if (item.requestId && !terminalRequests.has(item.status)) {
+        try {
+          const value = await silo.mediaRequestStatus(item.requestId);
+          item.status = value.state ?? value.status ?? item.status;
+          delete item.statusError;
+        } catch (error) { item.statusError = 'Status unavailable (HTTP ' + (error.status ?? 502) + ')'; }
+      }
+      if (!catalog || !membership || item.added || ['declined', 'cancelled', 'failed', 'submission failed'].includes(item.status)) continue;
+      const exact = catalog.filter((media) => media.type === item.type && String(media.tmdb_id) === String(item.tmdb));
+      if (exact.some((media) => membership.has(media.content_id))) item.added = true;
+      else if (exact.length === 1) additions.push({ item, contentId: exact[0].content_id });
+    }
+    if (additions.length) {
+      try {
+        await silo.appendAvailable(entry.id, additions.map(({ contentId }) => contentId));
+        for (const { item } of additions) item.added = true;
+      } catch (error) { current.autoAddError = 'Could not add available titles (HTTP ' + (error.status ?? 502) + ').'; }
+    }
+    return current;
+  }));
+}
+let trackingRunning = false;
+async function refreshRequests() {
+  if (trackingRunning) return;
+  trackingRunning = true;
+  try {
+    for (const entry of await state.list('requests')) {
+      if (!entry.titles.some((item) => (item.requestId && !terminalRequests.has(item.status)) ||
+        (entry.autoAdd && !item.added && !['declined', 'cancelled', 'failed', 'submission failed'].includes(item.status)))) continue;
+      try { await refreshTracked(entry); }
+      catch (error) { if (error.status !== 409 && error.status !== 404) console.warn('Media tracking check failed', error.status ?? error.name); }
+    }
+  } catch (error) { console.warn('Could not read media tracking', error.code ?? error.name); }
+  finally { trackingRunning = false; }
+}
+setInterval(() => void refreshRequests(), 5 * 60 * 1000).unref();
 const publicCollection = (item) => ({
   id: item.id, title: item.title, description: item.description ?? '', sourceUrl: item.source_url,
   libraryIds: item.library_ids?.length ? item.library_ids : [item.library_id].filter(Boolean),
@@ -55,6 +121,10 @@ function collectionId(id) {
   if (typeof id !== 'string' || !/^[\w-]{1,120}$/.test(id)) throw new AppError(400, 'Invalid Silo collection ID.');
   return id;
 }
+function queueKind(kind) {
+  if (kind !== 'movie' && kind !== 'series') throw new AppError(400, 'Choose movies or TV.');
+  return kind;
+}
 
 const titles = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
 function filter(items, query, number, size, sort) {
@@ -74,7 +144,7 @@ function filter(items, query, number, size, sort) {
   return { items: hits.slice((number - 1) * size, number * size), more: hits.length > number * size, total: hits.length };
 }
 
-async function body(req) {
+async function body(req, maxLength = 32_768) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '') || req.headers['x-franchise-app'] !== '1' ||
     req.headers['sec-fetch-site'] === 'cross-site') throw new AppError(415, 'Use the app to submit JSON requests.');
   try {
@@ -82,7 +152,7 @@ async function body(req) {
     let length = 0;
     for await (const chunk of req) {
       length += chunk.length;
-      if (length > 32_768) throw new AppError(413, 'Request too large.');
+      if (length > maxLength) throw new AppError(413, 'Request too large.');
       chunks.push(chunk);
     }
     const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -206,31 +276,44 @@ createServer(async (req, res) => {
       if (path === '/api/libraries') return send(res, 200, (await silo.libraries())
         .map((library) => ({ id: library.id, name: library.name, type: library.type, previewKind: previewKind(library) })));
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
+      if (path === '/api/drafts') return send(res, 200, await state.get('drafts', queueKind(input.get('kind'))) ?? { revision: 0 });
       if (path === '/api/collection') {
-        const { value, etag } = await silo.getCollection(collectionId(input.get('id')));
-        return send(res, 200, { ...publicCollection(value), etag });
+        const id = collectionId(input.get('id'));
+        const [{ value, etag }, undo] = await Promise.all([silo.getCollection(id), state.get('undo', id)]);
+        return send(res, 200, { ...publicCollection(value), etag, canUndo: Boolean(undo?.[0]?.after === etag) });
       }
       if (path === '/api/collection-health') {
         const id = collectionId(input.get('id'));
         const kind = input.get('kind');
         const { value } = await silo.getCollection(id);
         const collection = publicCollection(value);
+        const tracked = await state.get('requests', id);
+        const requestInfo = { requests: (tracked?.titles ?? []).map((item) => ({
+          ...item, url: new URL('/requests/' + item.type + '/' + item.tmdb,
+            env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz').href,
+        })), autoAdd: tracked?.autoAdd ?? false, autoAddError: tracked?.autoAddError, canAutoAdd: collection.kind === 'manual',
+          requestQueueUrl: new URL('/admin/requests', env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz').href };
         const sourceUrl = collection.sourceUrl ?? '';
         const movie = sourceUrl.match(/^(?:tmdb:\/\/collection\/|https:\/\/(?:www\.)?themoviedb\.org\/collection\/)(\d+)(?:-[\w-]+)?\/?$/);
         const tvdb = sourceUrl.match(/^https:\/\/(?:www\.)?thetvdb\.com\/lists\/([a-z0-9-]+)\/?$/);
         const libraryIds = (await silo.libraries()).filter((lib) =>
           collection.libraryIds.includes(lib.id) && previewKind(lib) === kind).map((lib) => lib.id);
         if (collection.kind !== 'manual' || (!movie && !tvdb) || (movie && kind !== 'movie') || !libraryIds.length) {
-          return send(res, 200, { checked: false, reason: 'Membership check requires a manual collection with a linked franchise and an eligible library.' });
+          return send(res, 200, { ...requestInfo, checked: false, reason: 'Membership check requires a manual collection with a linked franchise and an eligible library.' });
         }
-        const { matches } = await preview({ kind, libraryIds, provider: movie ? 'tmdb' : 'tvdb', id: (movie ?? tvdb)[1] });
-        const members = await silo.collectionMemberIds(id);
-        const title = (item) => item.title + (item.year ? ' (' + item.year + ')' : '');
-        return send(res, 200, { checked: true,
-          missing: matches.filter((item) => !item.match && item.basis === 'Missing').map(title),
-          ambiguous: matches.filter((item) => !item.match && item.basis !== 'Missing').map(title),
-          available: matches.filter((item) => item.match && !members.has(item.match.content_id)).map(title),
-        });
+        try {
+          const { matches } = await preview({ kind, libraryIds, provider: movie ? 'tmdb' : 'tvdb', id: (movie ?? tvdb)[1] });
+          const members = await silo.collectionMemberIds(id);
+          const title = (item) => item.title + (item.year ? ' (' + item.year + ')' : '');
+          return send(res, 200, { ...requestInfo, checked: true,
+            missing: matches.filter((item) => !item.match && item.basis === 'Missing').map(title),
+            ambiguous: matches.filter((item) => !item.match && item.basis !== 'Missing').map(title),
+            available: matches.filter((item) => item.match && !members.has(item.match.content_id)).map(title),
+          });
+        } catch (error) {
+          if (!tracked || !(error instanceof AppError)) throw error;
+          return send(res, 200, { ...requestInfo, checked: false, reason: error.message });
+        }
       }
       if (path === '/api/franchises') {
         const query = (input.get('q') ?? '').slice(0, 150);
@@ -278,6 +361,52 @@ createServer(async (req, res) => {
         if (!unavailable.length) res.setHeader('Cache-Control', 'private, max-age=120');
         return send(res, 200, { ...result, unavailable, mode: 'live', gallery: creator === 'all' ? null : galleryUrl(creator) });
       }
+    }
+    if (req.method === 'POST' && path === '/api/drafts') {
+      const { kind, revision, queue } = await body(req, 2_000_000);
+      if (!queue || !Number.isInteger(revision) || !['selected', 'drafts', 'edits'].every((name) =>
+        Array.isArray(queue[name]) && queue[name].length <= 300 &&
+        queue[name].every((entry) => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' &&
+          entry[1] && typeof entry[1] === 'object' && !Array.isArray(entry[1])))) throw new AppError(400, 'Invalid bulk queue.');
+      const result = await state.update('drafts', queueKind(kind), (old) => {
+        if ((old?.revision ?? 0) !== revision) throw new AppError(409, 'The saved queue changed on another device. Load it before saving.');
+        return { revision: revision + 1, queue: { selected: queue.selected, drafts: queue.drafts, edits: queue.edits } };
+      });
+      return send(res, 200, { revision: result.revision });
+    }
+    if (req.method === 'POST' && path === '/api/auto-add') {
+      const data = await body(req);
+      const id = collectionId(data.collectionId);
+      if (typeof data.enabled !== 'boolean') throw new AppError(400, 'Choose whether to auto-add requested titles.');
+      const { value } = await silo.getCollection(id);
+      if (value.collection_type !== 'manual') throw new AppError(422, 'Auto-add is for manual collections.');
+      const result = await lockCollection(id, () => state.update('requests', id, (current) => {
+        if (!current) throw new AppError(404, 'This collection has no tracked requests.');
+        return { ...current, autoAdd: data.enabled, autoAddError: undefined };
+      }));
+      return send(res, 200, { enabled: result.autoAdd });
+    }
+    if (req.method === 'POST' && path === '/api/undo-edit') {
+      const data = await body(req);
+      const id = collectionId(data.collectionId);
+      await lockCollection(id, async () => {
+        const [entry, ...older] = await state.get('undo', id) ?? [];
+        if (!entry?.after || entry.after !== data.etag) throw new AppError(409, 'There is no undo snapshot for this revision.');
+        let patched = false;
+        try {
+          await silo.restoreCollection(id, entry.snapshot, entry.after, () => { patched = true; });
+        } catch (error) {
+          if (patched) {
+            const { etag } = await silo.getCollection(id);
+            await state.update('undo', id, () => [{ ...entry, after: etag }, ...older]);
+          }
+          throw error;
+        }
+        const { etag } = await silo.getCollection(id);
+        if (older[0]?.after === entry.before) older[0].after = etag;
+        await state.update('undo', id, () => older);
+      });
+      return send(res, 200, { restored: true });
     }
     if (req.method === 'POST' && path === '/api/preview') {
       const { matches, libraryIds, libraryNames } = await preview(await body(req));
@@ -335,8 +464,22 @@ createServer(async (req, res) => {
         await selectedBackdrop(data);
         return send(res, 200, { action: 'Update', memberCount: members.length });
       }
-      const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members, sort: data.sort,
-        ...await selectedBackdrop(data) });
+      const artwork = await selectedBackdrop(data);
+      const updated = await lockCollection(id, async () => {
+        let patched = false;
+        const older = await state.get('undo', id) ?? [];
+        try {
+          return await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members, sort: data.sort,
+            ...artwork, onPatched: () => { patched = true; },
+            beforeChange: (snapshot) => state.update('undo', id, () => [{ snapshot, before: data.etag }, ...older.slice(0, 2)]),
+          });
+        } finally {
+          if (patched) {
+            const { etag } = await silo.getCollection(id);
+            await state.update('undo', id, ([entry, ...rest]) => [{ ...entry, after: etag }, ...rest]);
+          } else await state.update('undo', id, () => older);
+        }
+      });
       return send(res, 200, { ...publicCollection(updated), added: updated.added });
     }
     if (req.method === 'POST' && path === '/api/import') {
@@ -379,6 +522,18 @@ createServer(async (req, res) => {
         description: data.description ?? metadata?.description?.slice(0, 8000), sync, sort: data.sort,
         backdrop: data.kind === 'movie' && data.includeBackdrop !== false ? metadata?.backdrop : '', ...chosen });
       const mediaRequests = data.requestMissing === true ? { ...await silo.requestMissingMedia(candidates), unresolved } : undefined;
+      if (mediaRequests) {
+        const tracking = new Map(mediaRequests.tracking.map((item) => [item.tmdb, item]));
+        for (const candidate of candidates) {
+          if (!tracking.has(candidate.tmdb)) tracking.set(candidate.tmdb, {
+            tmdb: candidate.tmdb, type: candidate.type, title: candidate.title, status: 'submission failed',
+          });
+        }
+        await state.update('requests', result.id, (old) => ({
+          id: result.id, kind: data.kind, libraryIds: eligible.libraryIds, autoAdd: !sync && data.autoAdd === true,
+          titles: [...new Map([...(old?.titles ?? []).map((item) => [item.tmdb, item]), ...tracking]).values()],
+        }));
+      }
       return send(res, 201, { ...result, warning: result.warning ?? warning, mediaRequests,
         skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)) });
     }

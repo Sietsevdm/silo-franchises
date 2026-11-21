@@ -159,20 +159,54 @@ function drawCollectionHealth() {
       result.textContent = 'Checking linked franchise…';
       try {
         const value = await api('collection-health?' + params({ id: item.id, kind }));
-        if (!value.checked) { result.textContent = value.reason; return; }
         result.replaceChildren();
+        if (value.requests.length) {
+          const requests = create('details');
+          requests.open = true;
+          const list = create('ul');
+          for (const item of value.requests) {
+            const label = item.added ? 'In this collection' : item.status === 'pending' ? 'Awaiting approval' : item.status.replaceAll('_', ' ');
+            const row = create('li');
+            const title = create('a', item.title);
+            Object.assign(title, { href: item.url, target: '_blank', rel: 'noopener' });
+            row.append(title, document.createTextNode(' · ' + label + (item.statusError ? ' · ' + item.statusError : '') +
+              (item.requestId ? ' · Request #' + item.requestId : '')));
+            list.append(row);
+          }
+          const link = create('a', 'Open Silo Requests');
+          Object.assign(link, { href: value.requestQueueUrl, target: '_blank', rel: 'noopener' });
+          requests.append(create('summary', value.autoAdd ? 'Requests · auto-add enabled' : 'Requests'), list, link);
+          if (value.autoAddError) requests.append(create('p', value.autoAddError));
+          if (value.canAutoAdd) {
+            const toggle = action(value.autoAdd ? 'Turn off auto-add' : 'Turn on auto-add', async () => {
+              toggle.disabled = true;
+              try {
+                await post('auto-add', { collectionId: item.id, enabled: !value.autoAdd });
+                await button.onclick();
+              } catch (error) {
+                requests.append(create('p', error.message));
+                toggle.disabled = false;
+              }
+            });
+            requests.append(document.createTextNode(' '), toggle);
+          }
+          result.append(requests);
+        }
+        if (!value.checked) { result.append(create('p', value.reason)); return; }
+        let issues = 0;
         for (const [label, entries] of [
           ['Missing from eligible libraries', value.missing], ['Needs a manual match', value.ambiguous],
           ['Available to add', value.available],
         ]) {
           if (!entries.length) continue;
+          issues++;
           const list = create('ul');
           for (const title of entries) list.append(create('li', title));
           const details = create('details');
           details.append(create('summary', label + ' (' + entries.length + ')'), list);
           result.append(details);
         }
-        if (!result.childElementCount) result.textContent = 'All linked titles are in this collection.';
+        if (!issues) result.append(create('p', 'All linked titles are in this collection.'));
       } catch (error) { result.textContent = error.message; }
       finally { button.disabled = false; }
     });
@@ -216,6 +250,9 @@ function openPanel(title, editing) {
   el('sync-field').hidden = true;
   el('request-missing-field').hidden = editing;
   el('request-missing').checked = false;
+  el('auto-add-requested').checked = false;
+  updateAutoAdd();
+  el('undo-edit').hidden = true;
   el('sync-tmdb').checked = false;
   el('sync-note').hidden = true;
   state.customPosterRun = null;
@@ -249,6 +286,8 @@ async function openFranchise(item) {
   el('sync-field').hidden = kind !== 'movie' || item.provider !== 'tmdb';
   el('sync-tmdb').checked = draft?.sync === true;
   el('request-missing').checked = draft?.requestMissing === true;
+  el('auto-add-requested').checked = draft?.autoAdd === true;
+  updateAutoAdd();
   el('sync-note').hidden = !el('sync-tmdb').checked;
   if (draft) {
     for (const check of el('libraries').querySelectorAll('input')) check.checked = draft.libraryIds.includes(check.value);
@@ -368,6 +407,7 @@ async function openExisting(item, franchise = null) {
     const result = await api('collection?' + params({ id: item.id }));
     if (state.editRun !== run || state.current) return;
     state.editing = result;
+    el('undo-edit').hidden = !result.canUndo;
     state.artworkFranchise = franchise ?? franchiseFromCollection(result);
     el('movie-backdrop-tools').hidden = kind !== 'movie' || !state.artworkFranchise;
     state.editFranchise = result.kind === 'manual' ? franchise ?? franchiseFromCollection(result) : null;
@@ -470,6 +510,7 @@ function updateActions() {
   const valid = Boolean(el('collection-title').value.trim());
   el('publish').disabled = !!state.busy || !valid || !(state.editing || canImport());
   el('queue-current').disabled = !!state.busy || !valid || !(state.editing?.etag || canImport());
+  el('undo-edit').disabled = !!state.busy;
   if (state.current && state.matches?.length) {
     const counts = libraryCounts(state.matches, checked('matches'), checked('libraries'));
     const summary = [...counts].map(([id, count]) => {
@@ -632,10 +673,23 @@ function showPoster(poster) {
     status('custom-poster-status', '');
   }
   state.poster = poster;
-  el('chosen-poster').replaceChildren(...(poster ? [Object.assign(posterImage(poster), { loading: 'eager', fetchPriority: 'high' })] : []));
+  el('chosen-poster').replaceChildren(...(poster?.image ? [Object.assign(posterImage(poster), { loading: 'eager', fetchPriority: 'high' })] : []));
+  if (poster?.customUrl && !poster.image) void restorePosterPreview(poster);
   status('poster-label', poster ? `${poster.title} · ${poster.creator}` : (state.editing ? 'Keeping current artwork' : 'No poster selected'));
   for (const element of el('posters').querySelectorAll('button[data-id]')) element.setAttribute('aria-pressed', String(element.dataset.id === poster?.id));
   updateActions();
+}
+
+async function restorePosterPreview(poster) {
+  try {
+    const response = await fetch('/api/poster-preview', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Franchise-App': '1' }, body: JSON.stringify({ url: poster.customUrl }) });
+    if (!response.ok) throw new Error('Saved custom poster could not be previewed.');
+    const image = await response.blob();
+    if (state.poster === poster) showPoster({ ...poster, image: URL.createObjectURL(image) });
+  } catch (error) {
+    if (state.poster === poster) status('custom-poster-status', error.message);
+  }
 }
 
 el('custom-poster-form').onsubmit = async (event) => {
@@ -720,7 +774,8 @@ function draftFor(item) {
     description: state.descriptionDirty || state.metadataLoaded ? el('description').value : undefined,
     includeBackdrop: el('include-backdrop').checked, selectedBackdrop: state.selectedBackdrop,
     backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
-    sync: el('sync-tmdb').checked, requestMissing: el('request-missing').checked, overrides: state.overrides };
+    sync: el('sync-tmdb').checked, requestMissing: el('request-missing').checked,
+    autoAdd: !el('auto-add-field').hidden && el('auto-add-requested').checked, overrides: state.overrides };
 }
 const ready = (draft) => !!draft?.poster &&
   [...libraryCounts(draft.matches, draft.contentIds, draft.libraryIds).values()].some((count) => count >= 2);
@@ -728,7 +783,7 @@ const importPayload = (draft) => ({ provider: draft.provider, id: draft.id, kind
   libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, ...posterFields(draft.poster),
   description: draft.description, includeBackdrop: draft.includeBackdrop, overrides: draft.overrides,
   backdropUrl: draft.backdropUrl, backdropPath: draft.includeBackdrop ? draft.selectedBackdrop?.path : undefined,
-  sync: draft.sync, requestMissing: draft.requestMissing });
+  sync: draft.sync, requestMissing: draft.requestMissing, autoAdd: draft.autoAdd });
 
 const importDraft = (draft) => post('import', importPayload(draft));
 function requestSummary(report) {
@@ -764,7 +819,55 @@ function posterFields(poster) {
   return poster ? { posterId: poster.id, posterCreator: poster.creator } : {};
 }
 
+let queueRevision;
+let lastSavedQueue;
+let queueSaving = false;
+let queueConflict = false;
+const queueSnapshot = () => JSON.stringify({
+  selected: [...state.selected], drafts: [...state.drafts], edits: [...state.edits],
+}, (key, value) => key === 'image' && typeof value === 'string' && value.startsWith('blob:') ? undefined : value);
+
+async function loadServerQueue() {
+  if (queueSaving || state.busy) return;
+  const button = el('load-server-queue');
+  button.disabled = true;
+  try {
+    const result = await api('drafts?' + params({ kind }));
+    if (result.queue) {
+      state.selected = new Map(result.queue.selected);
+      state.drafts = new Map(result.queue.drafts);
+      state.edits = new Map(result.queue.edits);
+    }
+    queueRevision = result.revision;
+    queueConflict = false;
+    lastSavedQueue = queueSnapshot();
+    status('server-queue-status', result.queue ? 'Saved queue loaded.' : 'Queue changes will save here automatically.');
+    drawRows();
+  } catch (error) { status('server-queue-status', error.message); }
+  finally { button.disabled = false; }
+}
+el('load-server-queue').onclick = loadServerQueue;
+
+async function syncServerQueue() {
+  if (queueRevision == null || queueSaving || queueConflict || state.busy) return;
+  const snapshot = queueSnapshot();
+  if (snapshot === lastSavedQueue) return;
+  queueSaving = true;
+  try {
+    const value = await post('drafts', { kind, revision: queueRevision, queue: JSON.parse(snapshot) });
+    queueRevision = value.revision;
+    lastSavedQueue = snapshot;
+    status('server-queue-status', 'Queue saved on the server.');
+  } catch (error) {
+    queueConflict = /another device/.test(error.message);
+    status('server-queue-status', error.message);
+    return;
+  } finally { queueSaving = false; }
+  if (queueSnapshot() !== lastSavedQueue) void syncServerQueue();
+}
+
 function drawQueue() {
+  syncServerQueue();
   const available = visibleRows().filter((item) => item.provider !== 'silo' && !matchesFor(item).length);
   const all = el('select-visible');
   const visibleSelected = available.filter((item) => state.selected.has(itemKey(item))).length;
@@ -991,6 +1094,7 @@ el('publish').onclick = async () => {
     await refreshExisting();
     if (editing && state.editing === editing) {
       state.editing = await api('collection?' + params({ id: editing.id }));
+      el('undo-edit').hidden = !state.editing.canUndo;
           showPoster(null);
       chooseBackdrop(null);
       el('tv-backdrop-url').value = '';
@@ -1002,6 +1106,23 @@ el('publish').onclick = async () => {
         editing && result.added != null ? `${result.added} new titles added.` : '',
         result.skippedLibraries?.length ? `Skipped libraries with fewer than two titles: ${result.skippedLibraries.join(', ')}.` : '',
         result.warning, requestSummary(result.mediaRequests)].filter(Boolean).join(' '));
+    }
+  } catch (error) { status('publish-status', error.message); }
+  finally { state.busy = false; drawRows(); updateActions(); }
+};
+
+el('undo-edit').onclick = async () => {
+  const editing = state.editing;
+  if (!editing?.canUndo || state.busy) return;
+  state.busy = true;
+  updateActions();
+  try {
+    await post('undo-edit', { collectionId: editing.id, etag: editing.etag });
+    state.edits.delete(editing.id);
+    await refreshExisting();
+    if (state.editing === editing) {
+      await openExisting(editing, state.artworkFranchise);
+      status('publish-status', 'Previous collection details and artwork restored.');
     }
   } catch (error) { status('publish-status', error.message); }
   finally { state.busy = false; drawRows(); updateActions(); }
@@ -1020,7 +1141,12 @@ el('hide-existing').onchange = () => {
 };
 el('collection-title').oninput = () => { status('selection-title', el('collection-title').value || 'Your collection'); updateActions(); };
 el('description').oninput = () => { state.descriptionDirty = true; };
+function updateAutoAdd() {
+  el('auto-add-field').hidden = !el('request-missing').checked || el('sync-tmdb').checked;
+}
+el('request-missing').onchange = updateAutoAdd;
 el('sync-tmdb').onchange = (event) => {
+  updateAutoAdd();
   el('sync-note').hidden = !event.target.checked;
   if (event.target.checked && Object.keys(state.overrides).length) {
     invalidateMatches();
@@ -1056,3 +1182,4 @@ el(kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', '
 status('page-title', kind === 'series' ? 'TV Franchises' : 'Movie Franchises');
 void listFranchises(true);
 void loadLibraries().then(refreshExisting);
+void loadServerQueue();

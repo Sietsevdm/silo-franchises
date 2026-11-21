@@ -7,6 +7,50 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { posterCache } from './poster-cache.mjs';
+import { appState } from './app-state.mjs';
+
+test('server drafts survive restart and per-queue edits serialize', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'franchise-state-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const first = await appState(directory);
+  const update = () => first.update('drafts', 'movie', (old) => ({ revision: (old?.revision ?? 0) + 1 }));
+  await Promise.all([update(), update(), update()]);
+  const restarted = await appState(directory);
+  assert.deepEqual(await restarted.get('drafts', 'movie'), { revision: 3 });
+});
+
+test('restoring artwork and metadata requires the saved Silo revision', async (t) => {
+  const writes = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (options.method === 'GET') return Response.json({}, { headers: { ETag: '"after"' } });
+    writes.push([new URL(url).pathname + new URL(url).search, options]);
+    return new Response(null, { status: 204 });
+  });
+  const silo = siloClient('https://silo.example', 'collection-key');
+  const snapshot = { title: 'Prior title', description: 'Prior description', artwork: {
+    poster: Buffer.from([255, 216, 255, 224]).toString('base64'), backdrop: null,
+  } };
+  await assert.rejects(silo.restoreCollection('one', snapshot, '"stale"', () => {}), { status: 412 });
+  assert.equal(writes.length, 0);
+  await silo.restoreCollection('one', snapshot, '"after"', () => {});
+  assert.deepEqual(writes.map(([path, options]) => [options.method, path]), [
+    ['PATCH', '/api/v2/admin/collections/one'], ['PUT', '/api/v2/admin/collections/one/poster'],
+    ['DELETE', '/api/v2/admin/collections/one/image?type=backdrop'],
+  ]);
+  assert.deepEqual(JSON.parse(writes[0][1].body), { title: snapshot.title, description: snapshot.description });
+  assert.equal(writes[0][1].headers['If-Match'], '"after"');
+});
+
+test('adding available media preserves existing collection positions', async (t) => {
+  const additions = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (options.method === 'GET') return Response.json({ items: [{ media_item_id: 'existing', position: 4 }] });
+    additions.push([new URL(url).pathname, JSON.parse(options.body)]);
+    return new Response(null, { status: 204 });
+  });
+  await siloClient('https://silo.example', 'collection-key').appendAvailable('one', ['existing', 'new', 'new']);
+  assert.deepEqual(additions, [['/api/v2/admin/collections/one/items/new', { position: 5 }]]);
+});
 
 test('poster snapshots survive an app restart without another upstream request', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'poster-index-test-'));
