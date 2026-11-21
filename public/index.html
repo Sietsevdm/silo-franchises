@@ -10,11 +10,14 @@
 <body>
   <header class="top">
     <a href="/movies" class="brand"><span aria-hidden="true">S</span> Silo Franchises</a>
-    <nav aria-label="Franchise pages"><a href="/movies" id="movies-page">Movies</a><a href="/tv" id="tv-page">TV</a></nav>
+    <nav aria-label="Franchise pages">
+      <a href="/movies" id="movies-page">Movies</a><a href="/tv" id="tv-page">TV</a>
+      <a href="/bulk/movies" id="bulk-page">Bulk queue <span id="nav-queue-count" hidden></span></a>
+    </nav>
   </header>
   <main>
     <div class="workspace">
-      <section class="panel browse" aria-labelledby="page-title">
+      <section id="browse-panel" class="panel browse" aria-labelledby="page-title">
         <h1 id="page-title">Movie Franchises</h1>
         <div class="tabs" aria-label="Collection source">
           <button type="button" data-provider="tmdb" aria-pressed="true">TMDb</button>
@@ -30,13 +33,15 @@
         </select></label>
         <p id="franchise-status" role="status"></p>
         <div class="line select-bar"><label><input id="select-visible" type="checkbox"> Select visible</label><span id="selection-count">0 selected</span></div>
+        <p id="queue-nav-status" role="status"></p>
         <label id="hide-existing-field" class="check-line"><input id="hide-existing" type="checkbox"> Hide collections already in Silo</label>
-        <div id="silo-order" hidden>
+        <details id="silo-order" hidden>
+          <summary>Collection order</summary>
           <label class="field">Silo library<select id="order-library"></select></label>
           <button id="sort-collections" type="button">Sort collections A–Z in Silo</button>
           <p class="field-note">Sorts collections within each group in the chosen library.</p>
           <p id="order-status" role="status"></p>
-        </div>
+        </details>
         <details id="collection-health" hidden>
           <summary>Collection health</summary>
           <label class="check-line"><input id="health-artwork" type="checkbox"> Missing artwork only</label>
@@ -45,24 +50,39 @@
         </details>
         <div id="franchises" class="franchises"></div>
         <button id="more-franchises" type="button" hidden>Load more franchises</button>
-        <section class="batch" aria-labelledby="batch-title">
-          <h3 id="batch-title">Bulk queue</h3>
-          <div class="line"><button id="prepare-bulk" type="button" disabled>Prepare selected</button><button id="dry-bulk" type="button" disabled>Preview bulk changes</button><button class="accent" id="import-bulk" type="button" disabled>Apply ready</button></div>
-          <p id="bulk-status" role="status"></p><div id="queue"></div>
-          <div class="line"><button id="load-server-queue" type="button">Load saved queue</button></div>
-          <p id="server-queue-status" role="status"></p>
-          <ul id="bulk-plan" hidden></ul>
-          <details><summary>Bulk history</summary><div id="bulk-history"></div></details>
-        </section>
       </section>
-      <section class="panel work" aria-labelledby="selection-title">
+      <section id="bulk-panel" class="panel bulk" aria-labelledby="batch-title" hidden>
+        <h1 id="batch-title">Bulk queue</h1>
+        <nav class="tabs bulk-tabs" aria-label="Bulk queues"><a href="/bulk/movies" id="movie-queue-page">Movies</a><a href="/bulk/tv" id="tv-queue-page">TV</a></nav>
+        <p id="queue-summary" role="status"></p>
+        <fieldset class="bulk-settings">
+          <legend>Preparation settings</legend>
+          <div id="bulk-libraries"></div>
+          <label class="field">Poster source<select id="bulk-poster-source"></select></label>
+          <p id="bulk-library-status" role="status"></p>
+        </fieldset>
+        <div class="line bulk-actions"><button id="prepare-bulk" type="button" disabled>Prepare selected</button><button id="dry-bulk" type="button" disabled>Preview changes</button><button class="accent" id="import-bulk" type="button" disabled>Apply ready</button></div>
+        <p id="bulk-status" role="status"></p>
+        <ul id="bulk-plan" hidden></ul>
+        <div id="queue"></div>
+        <p id="queue-empty" hidden>Choose franchises on the <a id="queue-browse-link" href="/movies">browse page</a> to start a queue.</p>
+        <details class="queue-tools"><summary>Saved queue and history</summary>
+          <button id="load-server-queue" type="button">Load saved queue</button>
+          <p id="server-queue-status" role="status"></p>
+          <h2>Bulk history</h2><div id="bulk-history"></div>
+        </details>
+      </section>
+      <section id="work-panel" class="panel work" aria-labelledby="selection-title" hidden>
+        <button id="close-editor" type="button">Close editor</button>
         <div class="collection-hero">
           <img id="tmdb-backdrop" alt="" hidden>
           <h2 id="selection-title">Your collection</h2>
         </div>
-        <p id="selection-empty">Open a franchise to review titles and choose its artwork.</p>
+        <p id="selection-empty" hidden>Open a franchise to review titles and choose its artwork.</p>
         <div id="selection" hidden>
           <div class="line"><p id="detail-status" role="status"></p><a id="source-link" target="_blank" rel="noopener">View source</a></div>
+          <section class="editor-section" aria-labelledby="details-title">
+          <h3 id="details-title">Collection details</h3>
           <label class="field">Collection name<input id="collection-title" maxlength="150"></label>
           <label id="description-field" class="field" hidden>Description<textarea id="description" rows="5" maxlength="8000"></textarea></label>
           <div class="metadata">
@@ -80,15 +100,16 @@
               <button type="button" id="more-backdrops" hidden>Show more backdrops</button>
             </div>
           </div>
-          <div id="membership">
+          </section>
+          <section id="membership" class="editor-section" aria-labelledby="membership-title">
+            <h3 id="membership-title">Library matches</h3>
             <fieldset><legend>Silo libraries</legend><div id="libraries"></div><p id="library-status" role="status"></p></fieldset>
-            <div class="line">
+            <details class="preset-tools"><summary>Library presets</summary><div class="line">
               <label>Library preset <select id="library-preset"></select></label>
               <label>Preset name <input id="preset-name" maxlength="50"></label>
               <button id="save-preset" type="button">Save preset</button>
               <button id="delete-preset" type="button">Remove preset</button>
-            </div>
-            <p id="preset-status" role="status"></p>
+            </div><p id="preset-status" role="status"></p></details>
             <button id="preview" type="button">Preview library matches</button>
             <p id="match-status" role="status"></p>
             <p id="library-eligibility" role="status"></p>
@@ -102,6 +123,7 @@
               </form>
               <p id="manual-status" role="status"></p><div id="match-candidates"></div>
             </div>
+            <details id="automation-options"><summary>Sync and media requests</summary>
             <label id="sync-field" hidden><input id="sync-tmdb" type="checkbox"> Keep collection synced with TMDb</label>
             <p id="sync-note" class="field-note" hidden>Silo follows the full TMDb collection and syncs daily. Individual title selection applies to manual collections.</p>
             <div id="request-missing-field" hidden>
@@ -109,11 +131,12 @@
               <label id="auto-add-field" class="check-line" hidden><input id="auto-add-requested" type="checkbox"> Add requested titles automatically when they reach a collection library</label>
               <p class="field-note">Uses Silo Requests and its approval settings.</p>
             </div>
-          </div>
+            </details>
+          </section>
           <div class="publish"><div class="line"><button class="accent" id="publish" type="button" disabled>Add to Silo</button><button id="queue-current" type="button" disabled>Save to bulk queue</button><button id="undo-edit" type="button" hidden>Undo last edit</button></div><p id="publish-status" role="status"></p></div>
         </div>
       </section>
-      <aside class="panel artwork" aria-labelledby="poster-title">
+      <aside id="artwork-panel" class="panel artwork" aria-labelledby="poster-title" hidden>
         <h2 id="poster-title">Poster artwork</h2>
         <div class="poster-preview"><div id="chosen-poster"></div><p id="poster-label">No poster selected</p></div>
         <div id="poster-tools" hidden>

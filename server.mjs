@@ -95,7 +95,8 @@ const publicCollection = (item) => ({
   syncStatus: item.last_sync_status,
 });
 const assets = new Map(await Promise.all([
-  ['/', 'index.html', 'text/html'], ['/movies', 'index.html', 'text/html'], ['/tv', 'index.html', 'text/html'], ['/style.css', 'style.css', 'text/css'], ['/app.js', 'app.js', 'text/javascript'],
+  ...['/', '/movies', '/tv', '/bulk', '/bulk/movies', '/bulk/tv'].map((path) => [path, 'index.html', 'text/html']),
+  ['/style.css', 'style.css', 'text/css'], ['/app.js', 'app.js', 'text/javascript'],
 ].map(async ([path, name, mime]) => [path, { body: await readFile(new URL('./public/' + name, import.meta.url)), mime }])));
 
 function send(res, status, value, mime = 'application/json') {

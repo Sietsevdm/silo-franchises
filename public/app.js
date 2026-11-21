@@ -2,7 +2,11 @@ const el = (id) => document.getElementById(id);
 const status = (id, text) => { el(id).textContent = text; };
 const create = (tag, text) => Object.assign(document.createElement(tag), { textContent: text ?? '' });
 const checked = (container) => [...el(container).querySelectorAll('input:checked')].map((input) => input.value);
-const kind = location.pathname === '/tv' ? 'series' : 'movie';
+const route = location.pathname;
+const bulkPage = route === '/bulk' || route.startsWith('/bulk/');
+const kind = route.endsWith('/tv') ? 'series' : 'movie';
+const browsePath = kind === 'series' ? '/tv' : '/movies';
+const queuePath = '/bulk' + browsePath;
 const state = { provider: kind === 'series' ? 'tvdb' : 'tmdb', selected: new Map(), drafts: new Map(), edits: new Map(), existing: [], libraries: [], rows: [] };
 const titleKey = (title) => title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/\b(?:franchise|collection|universe)\s*$/, '').replace(/^the\s+/, '').replace(/[^a-z0-9]/g, '');
@@ -219,6 +223,9 @@ el('collection-health').ontoggle = drawCollectionHealth;
 el('health-artwork').onchange = drawCollectionHealth;
 
 function openPanel(title, editing) {
+  document.body.classList.add('editor-open');
+  el('work-panel').hidden = false;
+  el('artwork-panel').hidden = false;
   state.comparison = new Map();
   drawPosterComparison();
   el('selection-empty').hidden = true;
@@ -251,6 +258,8 @@ function openPanel(title, editing) {
   el('request-missing-field').hidden = editing;
   el('request-missing').checked = false;
   el('auto-add-requested').checked = false;
+  el('automation-options').open = false;
+  el('automation-options').hidden = editing;
   updateAutoAdd();
   el('undo-edit').hidden = true;
   el('sync-tmdb').checked = false;
@@ -273,7 +282,24 @@ function openPanel(title, editing) {
   showPoster(null);
   el('poster-query').value = title.replace(/\s+(?:collection|franchise|universe)$/i, '');
   void listPosters(true);
+  if (matchMedia('(max-width: 1100px)').matches) el('work-panel').scrollIntoView({ block: 'start' });
 }
+
+el('close-editor').onclick = () => {
+  state.current = null;
+  state.editing = null;
+  state.editFranchise = null;
+  state.artworkFranchise = null;
+  for (const run of ['editRun', 'metadataRun', 'backdropRun', 'posterRun', 'customPosterRun']) state[run] = null;
+  invalidateMatches();
+  document.body.classList.remove('editor-open');
+  el('work-panel').hidden = true;
+  el('artwork-panel').hidden = true;
+  drawRows();
+  const heading = el(bulkPage ? 'batch-title' : 'page-title');
+  heading.tabIndex = -1;
+  heading.focus();
+};
 
 async function openFranchise(item) {
   state.editing = null;
@@ -526,6 +552,18 @@ async function loadLibraries() {
   try {
     state.libraries = await api('libraries');
     const eligible = state.libraries.filter((lib) => lib.previewKind === kind);
+    if (bulkPage) {
+      const previous = stored('silo-bulk-libraries-' + kind, []);
+      for (const lib of eligible) {
+        const label = create('label');
+        label.append(inputCheck(lib.id, previous.includes(lib.id), () => {
+          store('silo-bulk-libraries-' + kind, checked('bulk-libraries'));
+          drawQueue();
+        }), document.createTextNode(lib.name));
+        el('bulk-libraries').append(label);
+      }
+      status('bulk-library-status', eligible.length ? '' : 'No enabled Silo libraries for this media type.');
+    }
     el('order-library').replaceChildren(...eligible.map((lib) => new Option(lib.name, lib.id)));
     el('sort-collections').disabled = !eligible.length;
     drawPresets();
@@ -535,7 +573,7 @@ async function loadLibraries() {
       el('libraries').append(label);
     }
     status('library-status', eligible.length ? '' : 'No enabled Silo libraries for this media type.');
-  } catch (error) { status('library-status', error.message); }
+  } catch (error) { status(bulkPage ? 'bulk-library-status' : 'library-status', error.message); }
 }
 
 function drawPresets(selected = '') {
@@ -822,6 +860,7 @@ function posterFields(poster) {
 let queueRevision;
 let lastSavedQueue;
 let queueSaving = false;
+let queueWrite;
 let queueConflict = false;
 const queueSnapshot = () => JSON.stringify({
   selected: [...state.selected], drafts: [...state.drafts], edits: [...state.edits],
@@ -854,7 +893,8 @@ async function syncServerQueue() {
   if (snapshot === lastSavedQueue) return;
   queueSaving = true;
   try {
-    const value = await post('drafts', { kind, revision: queueRevision, queue: JSON.parse(snapshot) });
+    queueWrite = post('drafts', { kind, revision: queueRevision, queue: JSON.parse(snapshot) });
+    const value = await queueWrite;
     queueRevision = value.revision;
     lastSavedQueue = snapshot;
     status('server-queue-status', 'Queue saved on the server.');
@@ -862,8 +902,25 @@ async function syncServerQueue() {
     queueConflict = /another device/.test(error.message);
     status('server-queue-status', error.message);
     return;
-  } finally { queueSaving = false; }
+  } finally { queueSaving = false; queueWrite = null; }
   if (queueSnapshot() !== lastSavedQueue) void syncServerQueue();
+}
+
+for (const id of ['bulk-page', 'movies-page', 'tv-page', 'movie-queue-page', 'tv-queue-page', 'queue-browse-link']) {
+  el(id).addEventListener('click', async (event) => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey ||
+      (lastSavedQueue === queueSnapshot() && !queueWrite)) return;
+    if (!queueWrite && queueRevision == null) return;
+    event.preventDefault();
+    const destination = event.currentTarget.href;
+    try {
+      while (queueWrite) await queueWrite;
+      await syncServerQueue();
+      while (queueWrite) await queueWrite;
+      if (lastSavedQueue === queueSnapshot()) location.assign(destination);
+      else status(bulkPage ? 'bulk-status' : 'queue-nav-status', 'The queue could not be saved. Reload the saved queue or retry before leaving.');
+    } catch (error) { status(bulkPage ? 'bulk-status' : 'queue-nav-status', error.message); }
+  });
 }
 
 function drawQueue() {
@@ -875,6 +932,11 @@ function drawQueue() {
   all.indeterminate = visibleSelected > 0 && visibleSelected < available.length;
   all.disabled = !available.length || !!state.busy;
   status('selection-count', `${state.selected.size} selected`);
+  const total = state.selected.size + state.edits.size;
+  const count = el('nav-queue-count');
+  count.textContent = total;
+  count.hidden = !total;
+  if (!bulkPage) return;
   const queue = el('queue');
   queue.replaceChildren();
   let readyCount = 0;
@@ -883,8 +945,11 @@ function drawQueue() {
     if (ready(draft)) readyCount++;
     const row = create('div');
     row.className = 'queue-row';
-    row.append(action(item.title, () => openFranchise(item), 'row-title'),
-      create('small', draft?.error ?? (ready(draft) ? 'Ready' : draft ? 'Needs a poster and 2 titles in one library' : 'Needs preparation')));
+    const remove = action('Remove', () => { state.selected.delete(key); state.drafts.delete(key); drawQueue(); });
+    remove.setAttribute('aria-label', 'Remove queued franchise ' + item.title);
+    remove.disabled = !!state.busy;
+    row.append(action(draft?.title ?? item.title, () => openFranchise(item), 'row-title'),
+      create('small', draft?.error ?? (ready(draft) ? 'Ready' : draft ? 'Needs a poster and 2 titles in one library' : 'Needs preparation')), remove);
     queue.append(row);
   }
   for (const [id, draft] of state.edits) {
@@ -898,11 +963,13 @@ function drawQueue() {
     queue.append(row);
   }
   readyCount += state.edits.size;
+  el('queue-empty').hidden = total > 0;
+  status('queue-summary', total ? total + ' queued · ' + readyCount + ' ready' : '');
   el('prepare-bulk').disabled = !state.selected.size || !!state.busy;
   el('dry-bulk').disabled = !(state.selected.size || state.edits.size) || !!state.busy;
   el('import-bulk').disabled = !readyCount || !!state.busy;
   drawHistory();
-  el('import-bulk').textContent = `${state.edits.size ? 'Apply' : 'Import'} ${readyCount} ready`;
+  el('import-bulk').textContent = readyCount ? `Apply ${readyCount} ready` : 'Apply ready';
 }
 
 el('select-visible').onchange = (event) => {
@@ -916,7 +983,7 @@ el('select-visible').onchange = (event) => {
 el('queue-current').onclick = () => {
   if (state.editing) {
     state.edits.set(state.editing.id, editDraft(state.editing));
-    status('publish-status', 'Changes queued. Select Apply ready to save them in Silo.');
+    status('publish-status', 'Changes queued. Open Bulk queue to apply them.');
     drawQueue();
     return;
   }
@@ -928,14 +995,13 @@ el('queue-current').onclick = () => {
 };
 
 el('prepare-bulk').onclick = async () => {
-  const libraryIds = checked('libraries');
+  const libraryIds = checked('bulk-libraries');
   if (!libraryIds.length) {
-    if (!state.current) await openFranchise(state.selected.values().next().value);
-    status('bulk-status', 'Select the libraries to use for the bulk queue, then prepare again.');
+    status('bulk-status', 'Select at least one library under Preparation settings.');
     return;
   }
   state.busy = true;
-  const creator = el('poster-source').value;
+  const creator = el('bulk-poster-source').value;
   drawRows();
   updateActions();
   try {
@@ -1178,8 +1244,22 @@ function updateSortOptions() {
   if (state.provider === 'silo') drawCollectionHealth();
 }
 updateSortOptions();
-el(kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
+document.body.classList.toggle('bulk-page', bulkPage);
+el('bulk-page').href = queuePath;
+el('browse-panel').hidden = bulkPage;
+el('bulk-panel').hidden = !bulkPage;
+el(bulkPage ? 'bulk-page' : kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
 status('page-title', kind === 'series' ? 'TV Franchises' : 'Movie Franchises');
-void listFranchises(true);
+if (bulkPage) {
+  el('queue-browse-link').href = browsePath;
+  el(kind === 'series' ? 'tv-queue-page' : 'movie-queue-page').setAttribute('aria-current', 'page');
+  status('batch-title', kind === 'series' ? 'TV bulk queue' : 'Movie bulk queue');
+  document.title = el('batch-title').textContent + ' · Silo Franchises';
+  el('bulk-poster-source').replaceChildren(...[...el('poster-source').options].map((option) => option.cloneNode(true)));
+  el('bulk-poster-source').value = stored('silo-bulk-creator-' + kind, 'all');
+  if (!el('bulk-poster-source').value) el('bulk-poster-source').value = 'all';
+  el('bulk-poster-source').onchange = () => store('silo-bulk-creator-' + kind, el('bulk-poster-source').value);
+  drawQueue();
+} else void listFranchises(true);
 void loadLibraries().then(refreshExisting);
 void loadServerQueue();
