@@ -13,10 +13,9 @@
     <nav aria-label="Franchise pages"><a href="/movies" id="movies-page">Movies</a><a href="/tv" id="tv-page">TV</a></nav>
   </header>
   <main>
-    <section class="intro"><h1 id="page-title">Movie Franchises</h1><p>Select franchises to import, or edit a collection already in Silo.</p></section>
     <div class="workspace">
-      <section class="panel browse" aria-labelledby="browse-title">
-        <h2 id="browse-title">Franchises</h2>
+      <section class="panel browse" aria-labelledby="page-title">
+        <h1 id="page-title">Movie Franchises</h1>
         <div class="tabs" aria-label="Collection source">
           <button type="button" data-provider="tmdb" aria-pressed="true">TMDb</button>
           <button type="button" data-provider="tvdb" aria-pressed="false">TheTVDB lists</button>
@@ -34,12 +33,20 @@
         </section>
       </section>
       <section class="panel work" aria-labelledby="selection-title">
-        <h2 id="selection-title">Your collection</h2>
+        <div class="collection-hero">
+          <img id="tmdb-backdrop" alt="" hidden>
+          <h2 id="selection-title">Your collection</h2>
+        </div>
         <p id="selection-empty">Open a franchise to review titles and choose its artwork.</p>
         <div id="selection" hidden>
           <div class="line"><p id="detail-status" role="status"></p><a id="source-link" target="_blank" rel="noopener">View source</a></div>
           <label class="field">Collection name<input id="collection-title" maxlength="150"></label>
           <label id="description-field" class="field" hidden>Description<textarea id="description" rows="5" maxlength="8000"></textarea></label>
+          <div class="metadata">
+            <p id="metadata-status" role="status"></p>
+            <a id="metadata-source" target="_blank" rel="noopener" hidden></a>
+            <label id="backdrop-field" hidden><input id="include-backdrop" type="checkbox" checked> Add TMDb backdrop to Silo</label>
+          </div>
           <div id="membership">
             <fieldset><legend>Silo libraries</legend><div id="libraries"></div><p id="library-status" role="status"></p></fieldset>
             <button id="preview" type="button">Preview library matches</button>
@@ -50,8 +57,8 @@
         </div>
       </section>
       <aside class="panel artwork" aria-labelledby="poster-title">
-        <h2 id="poster-title">Poster</h2>
-        <div id="chosen-poster"></div><p id="poster-label">No poster selected</p>
+        <h2 id="poster-title">Poster artwork</h2>
+        <div class="poster-preview"><div id="chosen-poster"></div><p id="poster-label">No poster selected</p></div>
         <div id="poster-tools" hidden>
           <label class="field">Poster source<select id="poster-source">
             <option value="all">All creators</option>
