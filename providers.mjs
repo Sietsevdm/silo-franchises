@@ -156,8 +156,16 @@ export function providers(token) {
     const tmdbId = page.match(/href="https?:\/\/(?:www\.)?themoviedb\.org\/(?:movie|tv)\/(\d+)/i)?.[1];
     return { tvdb: tvdbId, imdb, tmdb: tmdbId };
   });
+  const tvList = cached(async (id) => {
+    const official = (await tvIndex()).find((list) => list.id === id);
+    if (!official) throw new AppError(404, 'Choose a list from TheTVDB’s official directory.');
+    const page = await html(official.url, 'TheTVDB');
+    const items = parseTVMembers(page);
+    if (!items.length) throw new AppError(502, 'TheTVDB returned no recognizable list members.');
+    return { ...official, items };
+  });
   const details = cached(async (key) => {
-    const [provider, id] = key.split(':');
+    const [provider, id, kind] = key.split(':');
     if (provider === 'tmdb') {
       if (!token) throw new AppError(503, 'Set TMDB_READ_TOKEN in the stack to load movie collection members.');
       const response = await request(`${tmdb}/collection/${id}?language=en-US`, {
@@ -167,20 +175,16 @@ export function providers(token) {
       return { provider, id, title: item.name, description: item.overview, url: `https://www.themoviedb.org/collection/${id}`,
         members: item.parts.map((part) => ({ type: 'movie', title: part.title, tmdb: String(part.id), year: part.release_date?.slice(0, 4) })) };
     }
-    const official = (await tvIndex()).find((list) => list.id === id);
-    if (!official) throw new AppError(404, 'Choose a list from TheTVDB’s official directory.');
-    const url = official.url;
-    const page = await html(url, 'TheTVDB');
-    const title = decode(page.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? '');
-    const items = parseTVMembers(page);
-    if (!title || !items.length) throw new AppError(502, 'TheTVDB returned no recognizable list members.');
+    const list = await tvList(id);
+    const items = list.items.filter((item) => item.type === kind);
+    if (!items.length) throw new AppError(404, 'This list has no titles of the selected media type.');
     const members = [];
     for (let i = 0; i < items.length; i += 4) {
       members.push(...await Promise.all(items.slice(i, i + 4).map(async (item) =>
         ({ ...item, ...await tvMember(`${item.section}/${item.slug}`) }))));
     }
-    return { provider, id, title, url, members };
+    return { provider, id, title: list.title, url: list.url, members };
   });
   const posterById = async (id) => seenPosters.get(id) ?? (await posterIndex()).find((poster) => poster.id === id);
-  return { tvIndex, movieIndex, posterIndex, galleryPage, details, posterById };
+  return { tvIndex, tvList, movieIndex, posterIndex, galleryPage, details, posterById };
 }
