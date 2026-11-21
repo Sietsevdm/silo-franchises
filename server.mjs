@@ -90,12 +90,26 @@ async function preview(data) {
   if (!libraryIds.length || libraryIds.length > 20 || libraryIds.some((id) => typeof id !== 'string' || !id || id.length > 100)) {
     throw new AppError(400, 'Select one or more Silo libraries.');
   }
-  const [detail, libraries] = await Promise.all([source.details(id), silo.libraries()]);
+  const libraries = await silo.libraries();
   if (libraryIds.some((id) => !libraries.some((library) => library.id === id && previewKind(library) === data.kind))) {
     throw new AppError(400, 'A selected Silo library is unavailable for this media type.');
   }
+  const [detail, catalog] = await Promise.all([source.details(id), silo.catalog(libraryIds, data.kind)]);
   const libraryNames = new Map(libraries.map(({ id, name }) => [id, name]));
-  return { detail, libraryIds, libraryNames, matches: matchMembers(detail.members, await silo.catalog(libraryIds, data.kind)) };
+  const overrides = data.overrides ?? {};
+  if (typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).length > detail.members.length ||
+    Object.keys(overrides).some((index) => !/^(0|[1-9]\d*)$/.test(index) || Number(index) >= detail.members.length)) {
+    throw new AppError(400, 'Invalid manual matches.');
+  }
+  if (data.sync === true && Object.keys(overrides).length) throw new AppError(400, 'Manual matches require a manual collection.');
+  const byId = new Map(catalog.map((item) => [item.content_id, item]));
+  const matches = matchMembers(detail.members, catalog).map((item, index) => {
+    if (!Object.hasOwn(overrides, index)) return item;
+    const match = byId.get(overrides[index]);
+    if (!match) throw new AppError(409, 'A manually matched title is no longer in the selected libraries.');
+    return { ...item, match, basis: 'Manual match', libraryIds: match.previewLibraryIds };
+  });
+  return { detail, libraryIds, libraryNames, matches, catalog };
 }
 
 function posterUrl(value) {
@@ -211,23 +225,41 @@ createServer(async (req, res) => {
         const creator = input.get('creator') || posterSources[0];
         if (creator !== 'all' && !posterSources.includes(creator)) throw new AppError(400, 'Choose a configured poster source.');
         const creators = creator === 'all' ? posterSources : [creator];
+        const full = input.get('full') === '1';
         const results = await Promise.allSettled(creators.map(async (name) =>
-          query ? { items: await source.posterIndex(name) } : source.galleryPage(name, number)));
+          query && full ? { items: await source.posterIndex(name) } : source.galleryPage(name, number)));
         const available = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
         if (!available.length) throw results[0].reason;
         const items = [...new Map(available.flatMap((result) => result.items).map((item) => [item.id, item])).values()];
-        const result = query ? filter(items, query, number, 24) : { items, more: available.some((item) => item.more) };
+        const more = available.some((item) => item.more);
+        const result = query ? filter(items, query, full ? number : 1, full ? 24 : items.length) : { items, more };
+        if (!full) result.more = more;
         const unavailable = creators.filter((_, index) => results[index].status === 'rejected');
+        if (!unavailable.length) res.setHeader('Cache-Control', 'private, max-age=120');
         return send(res, 200, { ...result, unavailable, gallery: creator === 'all' ? null : galleryUrl(creator) });
       }
     }
     if (req.method === 'POST' && path === '/api/preview') {
       const { matches, libraryIds, libraryNames } = await preview(await body(req));
-      return send(res, 200, matches.map(({ match, title, type, year, basis, libraryIds: found = [] }) => ({
-        title, type, year, basis, contentId: match?.content_id, localTitle: match?.title,
+      return send(res, 200, matches.map(({ match, title, type, year, basis, libraryIds: found = [] }, index) => ({
+        index, title, type, year, basis, contentId: match?.content_id, localTitle: match?.title,
         libraryIds: libraryIds.filter((id) => found.includes(id)),
         libraries: libraryIds.filter((id) => found.includes(id)).map((id) => libraryNames.get(id)),
       })));
+    }
+    if (req.method === 'POST' && path === '/api/match-candidates') {
+      const data = await body(req);
+      const { catalog } = await preview(data);
+      const query = normalize(typeof data.query === 'string' ? data.query.slice(0, 150) : '');
+      const candidates = query ? filter(catalog, query, 1, 20, 'title-asc').items : [];
+      return send(res, 200, candidates.map(({ content_id, title, year, previewLibraryIds }) =>
+        ({ id: content_id, title, year, libraryIds: previewLibraryIds })));
+    }
+    if (req.method === 'POST' && path === '/api/sort-collections') {
+      const data = await body(req);
+      const library = (await silo.libraries()).find((item) => item.id === data.libraryId && previewKind(item) === data.kind);
+      if (!library) throw new AppError(400, 'Choose an eligible Silo library.');
+      return send(res, 200, await silo.sortCollections(library.id));
     }
     if (req.method === 'POST' && path === '/api/poster-preview') {
       const data = await body(req);
@@ -257,6 +289,12 @@ createServer(async (req, res) => {
           if (members.some((item) => !item)) throw new AppError(409, 'Library matches changed. Preview again before saving.');
         }
       }
+      if (data.dryRun === true) {
+        const { etag } = await silo.getCollection(id);
+        if (etag !== data.etag) throw new AppError(409, 'The collection changed. Reopen it before saving.');
+        await selectedBackdrop(data);
+        return send(res, 200, { action: 'Update', memberCount: members.length });
+      }
       const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members, sort: data.sort,
         ...await selectedBackdrop(data) });
       return send(res, 200, { ...publicCollection(updated), added: updated.added });
@@ -278,6 +316,13 @@ createServer(async (req, res) => {
       const eligible = eligibleCollection(libraryIds, members);
       if (!eligible.libraryIds.length) throw new AppError(422, 'Select at least two matched titles in the same library to create a collection.');
       const poster = await selectedPoster(data, true);
+      if (data.dryRun === true) {
+        await selectedBackdrop(data);
+        const resume = await silo.planImport({ detail, title, libraryIds: eligible.libraryIds, sync });
+        return send(res, 200, { action: resume ? 'Resume import' : 'Create', memberCount: eligible.members.length,
+          libraries: eligible.libraryIds.map((id) => libraryNames.get(id)),
+          skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)) });
+      }
       let metadata = detail.metadata;
       let warning;
       if (!metadata && (data.description == null || data.includeBackdrop !== false)) {

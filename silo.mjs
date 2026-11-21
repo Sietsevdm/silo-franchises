@@ -116,7 +116,14 @@ export function siloClient(base, token) {
     const value = await response.json();
     return withTag ? { value, etag: response.headers.get('etag') } : value;
   };
-  const libraries = async () => (await call('/libraries')).items.filter((library) => library.enabled);
+  let libraryCache;
+  function libraries() {
+    if (libraryCache?.expires > Date.now()) return libraryCache.pending;
+    const pending = call('/libraries').then(({ items }) => items.filter((library) => library.enabled));
+    libraryCache = { pending, expires: Date.now() + 30_000 };
+    pending.catch(() => { if (libraryCache?.pending === pending) libraryCache = null; });
+    return pending;
+  }
   const inventories = new Map();
   function loadLibrary(library, type) {
     const key = JSON.stringify([library, type]);
@@ -139,7 +146,7 @@ export function siloClient(base, token) {
         if (entry.cursor) entry.seen.add(entry.cursor);
       } while (entry.cursor);
       entry.complete = true;
-      entry.expires = Date.now() + 120_000;
+      entry.expires = Date.now() + 600_000;
       return entry.items;
     })().catch((error) => {
       if (error.status === 429) entry.expires = Date.now() + Math.max(120_000, Number(error.retryAfter) * 1000 + 30_000);
@@ -150,8 +157,10 @@ export function siloClient(base, token) {
   }
   const catalog = async (ids, type) => {
     const all = new Map();
-    for (const library of new Set(ids)) {
-      for (const [id, item] of await loadLibrary(library, type)) {
+    const libraries = [...new Set(ids)];
+    const inventories = await Promise.all(libraries.map((id) => loadLibrary(id, type)));
+    for (const [index, library] of libraries.entries()) {
+      for (const [id, item] of inventories[index]) {
         const previous = all.get(id);
         all.set(id, { ...item, previewLibraryIds: [...(previous?.previewLibraryIds ?? []), library] });
       }
@@ -163,6 +172,34 @@ export function siloClient(base, token) {
   const collections = async () => (await call(collectionsPath)).items;
   const collectionPath = (id) => `${collectionsPath}/${encodeURIComponent(id)}`;
   const getCollection = (id) => call(collectionPath(id), { withTag: true });
+  async function sortCollections(libraryId) {
+    const query = new URLSearchParams({ library_id: libraryId });
+    const scoped = (await call(collectionsPath + '?' + query)).items;
+    const titles = new Map(scoped.map(({ id, title }) => [id, title]));
+    const compare = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+    const groups = new Set([null, ...scoped.map((item) => item.group_id).filter(Boolean)]);
+    let changed = 0;
+    const skipped = [];
+    for (const group of groups) {
+      const order = new URLSearchParams(query);
+      if (group) order.set('group_id', group);
+      const { value, etag } = await call(collectionsPath + '/order?' + order, { withTag: true });
+      if (!etag || value.has_more || value.ordered_ids.some((id) => !titles.has(id))) {
+        skipped.push(group ?? 'Ungrouped');
+        continue;
+      }
+      const sorted = [...value.ordered_ids].sort((a, b) => compare.compare(titles.get(a), titles.get(b)));
+      if (sorted.every((id, index) => id === value.ordered_ids[index])) continue;
+      try {
+        await call(collectionsPath + '/order', { method: 'PUT', etag,
+          body: { library_id: libraryId, group_id: group, ordered_ids: sorted } });
+        changed++;
+      } catch {
+        skipped.push(group ?? 'Ungrouped');
+      }
+    }
+    return { changed, skipped };
+  }
 
   async function prepareArtwork(url, label, custom = false) {
     const image = custom ? await downloadPublicArtwork(url) : await bytes(await request(url, {}, label));
@@ -221,22 +258,30 @@ export function siloClient(base, token) {
     return members.length ? { ...updated, added: additions.length } : updated;
   }
   const active = new Set();
-  async function publish({ detail, title, libraryIds, members, poster, description, backdrop, customBackdrop = false, sync = false, sort }) {
+  function importSlug({ detail, title, libraryIds, sync }) {
     const identity = JSON.stringify([detail.provider, detail.id, normalize(title), [...libraryIds].sort(), ...(sync ? ['sync'] : [])]);
-    const slug = 'franchise-' + createHash('sha256').update(identity).digest('hex').slice(0, 24);
+    return 'franchise-' + createHash('sha256').update(identity).digest('hex').slice(0, 24);
+  }
+  async function existingImport(title, libraryIds, slug) {
+    const existing = await collections();
+    const resumable = existing.find((item) => item.slug === slug && normalize(item.title) === normalize(title));
+    if (!resumable && existing.some((item) => normalize(item.title) === normalize(title) &&
+      (item.library_ids?.length ? item.library_ids : [item.library_id]).some((id) => libraryIds.includes(id)))) {
+      throw new AppError(409, 'A collection with this name already exists in a selected library. Choose a different title.');
+    }
+    return resumable;
+  }
+  const planImport = async (options) => Boolean(await existingImport(options.title, options.libraryIds, importSlug(options)));
+  async function publish({ detail, title, libraryIds, members, poster, description, backdrop, customBackdrop = false, sync = false, sort }) {
+    const slug = importSlug({ detail, title, libraryIds, sync });
     if (active.has(slug)) throw new AppError(409, 'This collection is already being imported.');
     active.add(slug);
     let collection;
     try {
       const form = await prepareArtwork(poster.image, 'Poster artwork', poster.custom);
       const customForm = customBackdrop ? await prepareArtwork(backdrop, 'Backdrop', true) : null;
-      const existing = await collections();
-      collection = existing.find((item) => item.slug === slug && normalize(item.title) === normalize(title));
+      collection = await existingImport(title, libraryIds, slug);
       if (!collection) {
-        if (existing.some((item) => normalize(item.title) === normalize(title) &&
-          (item.library_ids?.length ? item.library_ids : [item.library_id]).some((id) => libraryIds.includes(id)))) {
-          throw new AppError(409, 'A collection with this name already exists in a selected library. Choose a different title.');
-        }
         const syncedSource = sync ? { collection_type: 'tmdb', source_url: `tmdb://collection/${detail.id}`,
           source_config: { mode: 'tmdb_collection', collection_id: Number(detail.id) }, sync_schedule: '0 4 * * *' } : null;
         collection = await call(collectionsPath, { method: 'POST', body: {
@@ -278,5 +323,5 @@ export function siloClient(base, token) {
       active.delete(slug);
     }
   }
-  return { libraries, catalog, publish, collections, getCollection, updateCollection };
+  return { libraries, catalog, publish, planImport, collections, getCollection, updateCollection, sortCollections };
 }

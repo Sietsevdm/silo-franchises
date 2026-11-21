@@ -30,6 +30,42 @@ test('provider ID matching respects media type and rejects conflicting fallback 
   assert.equal(incorrect.match, undefined);
 });
 
+test('Silo collection ordering updates group order only and skips incomplete order snapshots', async (t) => {
+  const writes = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const { pathname, searchParams } = new URL(url);
+    assert.equal(searchParams.get('library_id') ?? JSON.parse(options.body).library_id, '1');
+    if (options.method === 'PUT') {
+      assert.equal(pathname, '/api/v2/admin/collections/order');
+      assert.equal(options.headers['If-Match'], '"order-a"');
+      writes.push(JSON.parse(options.body));
+      return Response.json({});
+    }
+    if (pathname.endsWith('/order')) {
+      const grouped = searchParams.has('group_id');
+      return Response.json({ ordered_ids: grouped ? ['group-z'] : ['z', 'a'], has_more: grouped },
+        { headers: { ETag: '"order-a"' } });
+    }
+    return Response.json({ items: [
+      { id: 'z', title: 'Zulu' }, { id: 'a', title: 'Alpha' }, { id: 'group-z', title: 'Zulu', group_id: 'group' },
+    ] });
+  });
+  const silo = siloClient('https://silo.example', 'fake');
+  assert.deepEqual(await silo.sortCollections('1'), { changed: 1, skipped: ['group'] });
+  assert.deepEqual(writes, [{ library_id: '1', group_id: null, ordered_ids: ['a', 'z'] }]);
+});
+
+test('import planning detects title collisions without writing collections', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    assert.equal(options.method, 'GET');
+    return Response.json({ items: [{ title: 'Existing title', library_ids: ['1'] }] });
+  });
+  const silo = siloClient('https://silo.example', 'fake');
+  const input = { detail: { provider: 'tmdb', id: '2' }, libraryIds: ['1'], title: 'New title', sync: false };
+  assert.equal(await silo.planImport(input), false);
+  await assert.rejects(silo.planImport({ ...input, title: 'Existing title' }), { status: 409 });
+});
+
 test('creates a manual collection and resumes after an interrupted artwork upload', async (t) => {
   let collection;
   let uploads = 0;

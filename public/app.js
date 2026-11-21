@@ -19,6 +19,16 @@ function franchiseFromCollection(collection) {
 const itemKey = ({ provider, id }) => `${provider}:${id}`;
 const inputCheck = (value, selected, action) => Object.assign(create('input'), { type: 'checkbox', value, checked: selected, onchange: action });
 const sortedTitles = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+function stored(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
+function store(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+}
+const presetKey = 'silo-library-presets-' + kind;
+const historyKey = 'silo-bulk-history-' + kind;
+const presets = new Map(stored(presetKey, []));
+const history = stored(historyKey, []);
 try { el('hide-existing').checked = localStorage.getItem('silo-hide-existing') === 'true'; } catch {}
 
 async function api(route, options = {}) {
@@ -162,8 +172,6 @@ function openPanel(title, editing) {
   el('sync-field').hidden = true;
   el('sync-tmdb').checked = false;
   el('sync-note').hidden = true;
-  el('sort-silo').checked = false;
-  state.sortTouched = false;
   state.customPosterRun = null;
   el('custom-poster-url').value = '';
   el('custom-poster-preview').disabled = false;
@@ -197,10 +205,10 @@ async function openFranchise(item) {
   el('sync-note').hidden = !el('sync-tmdb').checked;
   if (draft) {
     for (const check of el('libraries').querySelectorAll('input')) check.checked = draft.libraryIds.includes(check.value);
+    state.overrides = draft.overrides ?? {};
     renderMatches(draft.matches, draft.contentIds);
     showPoster(draft.poster);
     el('custom-poster-url').value = draft.poster?.customUrl ?? '';
-    el('sort-silo').checked = draft.sort === 'title';
     if (draft.description != null) {
       el('description').value = draft.description;
       state.descriptionDirty = true;
@@ -269,7 +277,7 @@ function appendBackdrops() {
     const button = action('', () => chooseBackdrop(item));
     button.dataset.path = item.path;
     button.setAttribute('aria-pressed', String(state.selectedBackdrop?.path === item.path));
-    const image = Object.assign(create('img'), { src: item.thumbnail, alt: '', loading: 'lazy' });
+    const image = Object.assign(create('img'), { src: item.thumbnail, alt: '', loading: 'lazy', decoding: 'async' });
     button.append(image, create('span', item.film));
     container.append(button);
   }
@@ -328,7 +336,6 @@ async function openExisting(item, franchise = null) {
     }
     el('collection-title').value = result.title;
     el('description').value = result.description;
-    el('sort-silo').checked = result.titleSort;
     const queued = state.edits.get(result.id);
     if (queued) {
       el('collection-title').value = queued.payload.title;
@@ -337,12 +344,11 @@ async function openExisting(item, franchise = null) {
       el('tv-backdrop-url').value = queued.payload.backdropUrl ?? '';
       showPoster(queued.poster);
       el('custom-poster-url').value = queued.poster?.customUrl ?? '';
-      if (queued.payload.sort) {
-        state.sortTouched = true;
-        el('sort-silo').checked = queued.payload.sort === 'title';
-      }
       if (queued.backdrop) chooseBackdrop(queued.backdrop);
-      if (state.editFranchise && queued.payload.contentIds?.length) renderMatches(queued.matches, queued.payload.contentIds);
+      if (state.editFranchise && queued.payload.contentIds?.length) {
+        state.overrides = queued.payload.overrides ?? {};
+        renderMatches(queued.matches, queued.payload.contentIds);
+      }
     }
     status('detail-status', `Editing Silo collection · ${result.count ?? 0} titles${el('membership').hidden ? '' : ' · Preview library matches to add titles'}`);
     if (!state.poster) status('poster-label', 'Current artwork will be kept unless you select a replacement.');
@@ -354,6 +360,9 @@ async function openExisting(item, franchise = null) {
 
 function invalidateMatches() {
   state.previewRun = null;
+  state.overrides = {};
+  closeManualMatch();
+  el('missing-report').hidden = true;
   state.matches = [];
   el('matches').replaceChildren();
   status('match-status', '');
@@ -365,6 +374,10 @@ function renderMatches(result, chosen) {
   state.matches = result;
   el('matches').replaceChildren();
   const used = new Set();
+  const missing = result.filter((item) => !item.contentId);
+  el('missing-report').hidden = !missing.length;
+  status('missing-summary', `Missing or ambiguous titles (${missing.length})`);
+  el('missing-titles').replaceChildren(...missing.map((item) => create('li', item.title + (item.year ? ` (${item.year})` : ''))));
   for (const item of result) {
     const row = create(item.contentId ? 'label' : 'div');
     row.className = 'match';
@@ -386,6 +399,7 @@ function renderMatches(result, chosen) {
       details.append(libraries);
     }
     row.append(details, create('small', item.basis));
+    if (!item.contentId && !el('sync-tmdb').checked) row.append(action('Match manually', () => startManualMatch(item)));
     el('matches').append(row);
   }
   status('match-status', `${used.size} of ${result.length} titles matched.`);
@@ -424,6 +438,9 @@ async function loadLibraries() {
   try {
     state.libraries = await api('libraries');
     const eligible = state.libraries.filter((lib) => lib.previewKind === kind);
+    el('order-library').replaceChildren(...eligible.map((lib) => new Option(lib.name, lib.id)));
+    el('sort-collections').disabled = !eligible.length;
+    drawPresets();
     for (const lib of eligible) {
       const label = create('label');
       label.append(inputCheck(lib.id, false, invalidateMatches), document.createTextNode(lib.name));
@@ -432,6 +449,102 @@ async function loadLibraries() {
     status('library-status', eligible.length ? '' : 'No enabled Silo libraries for this media type.');
   } catch (error) { status('library-status', error.message); }
 }
+
+function drawPresets(selected = '') {
+  el('library-preset').replaceChildren(new Option('Choose a preset', ''),
+    ...[...presets.keys()].sort(sortedTitles.compare).map((name) => new Option(name, name)));
+  el('library-preset').value = selected;
+  el('delete-preset').disabled = !selected;
+}
+el('library-preset').onchange = ({ target }) => {
+  const ids = presets.get(target.value);
+  el('delete-preset').disabled = !ids;
+  if (!ids) return;
+  el('preset-name').value = target.value;
+  const available = [...el('libraries').querySelectorAll('input')].filter((check) => !check.closest('label').hidden);
+  if (state.editing) return status('preset-status', 'Silo controls the libraries for this existing collection.');
+  for (const check of available) check.checked = ids.includes(check.value);
+  invalidateMatches();
+  const omitted = ids.filter((id) => !available.some((check) => check.value === id));
+  status('preset-status', omitted.length ? 'Preset applied. Some saved libraries are unavailable here.' : 'Preset applied.');
+};
+el('save-preset').onclick = () => {
+  const name = el('preset-name').value.trim();
+  const ids = checked('libraries');
+  if (!name || !ids.length) return status('preset-status', 'Enter a name and select libraries.');
+  presets.set(name, ids);
+  drawPresets(name);
+  status('preset-status', store(presetKey, [...presets]) ? 'Preset saved in this browser.' : 'Preset saved for this session.');
+};
+el('delete-preset').onclick = () => {
+  presets.delete(el('library-preset').value);
+  drawPresets();
+  el('preset-name').value = '';
+  status('preset-status', store(presetKey, [...presets]) ? 'Preset removed.' : 'Preset removed for this session.');
+};
+el('sort-collections').onclick = async () => {
+  const libraryId = el('order-library').value;
+  const button = el('sort-collections');
+  button.disabled = true;
+  status('order-status', 'Sorting collections in Silo…');
+  try {
+    const result = await post('sort-collections', { libraryId, kind });
+    const updated = result.changed ? result.changed + ' groups reordered.' : 'No groups needed reordering.';
+    status('order-status', updated + (result.skipped.length ? ' Groups skipped: ' + result.skipped.join(', ') + '.' : ''));
+  } catch (error) { status('order-status', error.message); }
+  finally { button.disabled = false; }
+};
+
+function closeManualMatch() {
+  state.manualMatch = null;
+  el('manual-match').hidden = true;
+  el('match-candidates').replaceChildren();
+  status('manual-status', '');
+}
+function startManualMatch(item) {
+  closeManualMatch();
+  state.manualMatch = item;
+  el('manual-match').hidden = false;
+  el('match-query').value = item.title;
+  el('match-query').focus();
+  el('match-search').requestSubmit();
+}
+el('cancel-match').onclick = closeManualMatch;
+el('match-search').onsubmit = async (event) => {
+  event.preventDefault();
+  const item = state.manualMatch;
+  if (!item) return;
+  const run = state.manualRun = Symbol();
+  const data = requestFor(state.current ?? state.editFranchise, checked('libraries'));
+  el('match-candidates').replaceChildren();
+  status('manual-status', 'Searching for ' + item.title + '…');
+  try {
+    const results = await post('match-candidates', { ...data, query: el('match-query').value.trim() });
+    if (state.manualMatch !== item || state.manualRun !== run) return;
+    status('manual-status', results.length ? 'Choose a library title for ' + item.title + '.' : 'No titles found. Try a shorter search.');
+    for (const result of results) {
+      const names = result.libraryIds.map((id) => state.libraries.find((library) => library.id === id)?.name);
+      const label = [result.title + (result.year ? ' (' + result.year + ')' : ''), ...names].join(' · ');
+      el('match-candidates').append(action(label, async () => {
+        if (state.manualMatch !== item || state.manualRun !== run) return;
+        const chosen = [...checked('matches'), result.id];
+        const overrides = { ...state.overrides, [item.index]: result.id };
+        closeManualMatch();
+        const previewRun = state.previewRun = Symbol();
+        try {
+          const matches = await post('preview', { ...data, overrides });
+          if (state.previewRun !== previewRun) return;
+          state.overrides = overrides;
+          renderMatches(matches, chosen);
+        } catch (error) {
+          if (state.previewRun === previewRun) status('match-status', error.message);
+        }
+      }));
+    }
+  } catch (error) {
+    if (state.manualMatch === item && state.manualRun === run) status('manual-status', error.message);
+  }
+};
 
 el('preview').onclick = async () => {
   invalidateMatches();
@@ -445,7 +558,7 @@ el('preview').onclick = async () => {
 };
 
 function posterImage(poster) {
-  return Object.assign(create('img'), { src: poster.image, alt: poster.title, loading: 'lazy' });
+  return Object.assign(create('img'), { src: poster.image, alt: poster.title, loading: 'lazy', decoding: 'async' });
 }
 function showPoster(poster) {
   if (!poster?.customUrl) {
@@ -454,7 +567,7 @@ function showPoster(poster) {
     status('custom-poster-status', '');
   }
   state.poster = poster;
-  el('chosen-poster').replaceChildren(...(poster ? [posterImage(poster)] : []));
+  el('chosen-poster').replaceChildren(...(poster ? [Object.assign(posterImage(poster), { loading: 'eager', fetchPriority: 'high' })] : []));
   status('poster-label', poster ? `${poster.title} · ${poster.creator}` : (state.editing ? 'Keeping current artwork' : 'No poster selected'));
   for (const element of el('posters').querySelectorAll('button')) element.setAttribute('aria-pressed', String(element.dataset.id === poster?.id));
   updateActions();
@@ -489,6 +602,7 @@ async function listPosters(reset) {
   el('more-posters').hidden = true;
   if (reset) {
     state.posterPage = 1;
+    state.posterSeen = new Set();
     state.posterQuery = el('poster-query').value.trim();
     state.posterCreator = el('poster-source').value;
     el('posters').replaceChildren();
@@ -496,13 +610,21 @@ async function listPosters(reset) {
   }
   status('poster-status', 'Loading artwork…');
   try {
-    const result = await api('posters?' + params({ q: state.posterQuery, page: state.posterPage, creator: state.posterCreator }));
+    let result;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      result = await api('posters?' + params({ q: state.posterQuery, page: state.posterPage, creator: state.posterCreator }));
+      if (state.posterRun !== run) return;
+      if (result.items.length || !result.more || !state.posterQuery || attempt === 2) break;
+      state.posterPage++;
+    }
     if (state.posterRun !== run) return;
     if (result.gallery) {
       el('gallery-link').href = result.gallery;
       el('gallery-link').hidden = false;
     }
     for (const poster of result.items) {
+      if (state.posterSeen.has(poster.id)) continue;
+      state.posterSeen.add(poster.id);
       const button = action('', () => showPoster(poster));
       button.dataset.id = poster.id;
       button.setAttribute('aria-pressed', String(state.poster?.id === poster.id));
@@ -511,7 +633,7 @@ async function listPosters(reset) {
     }
     el('more-posters').hidden = !result.more;
     const unavailable = result.unavailable?.length ? `Could not load: ${result.unavailable.join(', ')}.` : '';
-    status('poster-status', [result.items.length ? '' : 'No posters found. Try a shorter title or browse all.', unavailable].filter(Boolean).join(' '));
+    status('poster-status', [result.items.length ? '' : result.more ? 'No matches on these pages. Load more to keep searching.' : 'No more poster matches. Try a shorter title or browse all.', unavailable].filter(Boolean).join(' '));
   } catch (error) { if (state.posterRun === run) status('poster-status', error.message); }
 }
 
@@ -521,14 +643,16 @@ function draftFor(item) {
     description: state.descriptionDirty || state.metadataLoaded ? el('description').value : undefined,
     includeBackdrop: el('include-backdrop').checked, selectedBackdrop: state.selectedBackdrop,
     backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
-    sync: el('sync-tmdb').checked, sort: el('sort-silo').checked ? 'title' : undefined };
+    sync: el('sync-tmdb').checked, overrides: state.overrides };
 }
 const ready = (draft) => !!draft?.poster &&
   [...libraryCounts(draft.matches, draft.contentIds, draft.libraryIds).values()].some((count) => count >= 2);
-const importDraft = (draft) => post('import', { provider: draft.provider, id: draft.id, kind: draft.kind,
+const importPayload = (draft) => ({ provider: draft.provider, id: draft.id, kind: draft.kind,
   libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, ...posterFields(draft.poster),
-  description: draft.description, includeBackdrop: draft.includeBackdrop, sort: draft.sort,
+  description: draft.description, includeBackdrop: draft.includeBackdrop, overrides: draft.overrides,
   backdropUrl: draft.backdropUrl, backdropPath: draft.includeBackdrop ? draft.selectedBackdrop?.path : undefined, sync: draft.sync });
+
+const importDraft = (draft) => post('import', importPayload(draft));
 
 function editDraft(editing) {
   const libraryIds = checked('libraries');
@@ -539,12 +663,11 @@ function editDraft(editing) {
     payload: {
       collectionId: editing.id, etag: editing.etag, title: el('collection-title').value,
       description: el('description').value, ...posterFields(state.poster),
-      sort: state.sortTouched ? (el('sort-silo').checked ? 'title' : 'source') : undefined,
       kind, backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
       ...(state.selectedBackdrop && state.artworkFranchise
         ? { ...requestFor(state.artworkFranchise, libraryIds), backdropPath: state.selectedBackdrop.path } : {}),
       ...(state.editFranchise && contentIds.length
-        ? { ...requestFor(state.editFranchise, libraryIds), contentIds } : {}),
+        ? { ...requestFor(state.editFranchise, libraryIds), contentIds, overrides: state.overrides } : {}),
     },
   };
 }
@@ -585,7 +708,9 @@ function drawQueue() {
   }
   readyCount += state.edits.size;
   el('prepare-bulk').disabled = !state.selected.size || !!state.busy;
+  el('dry-bulk').disabled = !(state.selected.size || state.edits.size) || !!state.busy;
   el('import-bulk').disabled = !readyCount || !!state.busy;
+  drawHistory();
   el('import-bulk').textContent = `${state.edits.size ? 'Apply' : 'Import'} ${readyCount} ready`;
 }
 
@@ -628,13 +753,15 @@ el('prepare-bulk').onclick = async () => {
       status('bulk-status', `Preparing ${item.title}…`);
       const draft = { ...requestFor(item, libraryIds), title: item.title, matches: [], contentIds: [], poster: null };
       try {
-        draft.matches = await post('preview', requestFor(item, libraryIds));
-        draft.contentIds = [...new Set(draft.matches.map((match) => match.contentId).filter(Boolean))];
+        const preview = post('preview', requestFor(item, libraryIds));
         const query = item.title.replace(/^the\s+|\s+(?:franchise|collection|universe)$/gi, '').trim();
-        if (query) {
-          const result = await api('posters?' + params({ q: query, page: 1, creator }));
+        const posterSearch = query ? api('posters?' + params({ q: query, page: 1, creator })).catch(() => null) : null;
+        draft.matches = await preview;
+        draft.contentIds = [...new Set(draft.matches.map((match) => match.contentId).filter(Boolean))];
+        const result = await posterSearch;
+        if (result) {
           const exact = result.items.filter((poster) => titleKey(poster.title) === titleKey(item.title));
-          if (exact.length === 1 && !result.more && !result.unavailable?.length) draft.poster = exact[0];
+          if (exact.length === 1 && !result.unavailable?.length) draft.poster = exact[0];
         }
       } catch (error) { draft.error = error.message; }
       state.drafts.set(key, draft);
@@ -648,53 +775,114 @@ el('prepare-bulk').onclick = async () => {
   }
 };
 
-el('import-bulk').onclick = async () => {
+function bulkEntries() {
+  return [
+    ...[...state.selected].map(([key, item]) => {
+      const draft = state.drafts.get(key);
+      return { key, title: draft?.title ?? item.title, route: 'import', payload: ready(draft) ? importPayload(draft) : null };
+    }),
+    ...[...state.edits].map(([key, draft]) => ({ key, title: draft.payload.title, route: 'edit', payload: draft.payload })),
+  ];
+}
+
+function recordBulk(entry, result, note) {
+  const { route, key, title, payload } = entry;
+  history.unshift({ route, key, title, result, note, date: new Date().toISOString(),
+    payload: result === 'Failed' ? payload : undefined });
+  history.splice(30);
+  store(historyKey, history);
+}
+function drawHistory() {
+  const entries = history.map((entry, index) => {
+    const row = create('div');
+    row.className = 'queue-row';
+    row.append(create('span', entry.title + ' · ' + entry.result),
+      create('small', [new Date(entry.date).toLocaleString(), entry.note].filter(Boolean).join(' · ')));
+    if (entry.result === 'Failed' && entry.payload && !history.slice(0, index).some((next) =>
+      next.route === entry.route && next.key === entry.key)) {
+      const retry = action('Retry', () => applyBulk([entry]));
+      retry.disabled = !!state.busy;
+      row.append(retry);
+    }
+    return row;
+  });
+  el('bulk-history').replaceChildren(...(entries.length ? entries : [create('p', 'No bulk runs yet.')]));
+}
+
+el('dry-bulk').onclick = async () => {
+  const entries = bulkEntries();
+  const plan = el('bulk-plan');
+  plan.replaceChildren();
+  plan.hidden = false;
   state.busy = true;
+  drawQueue();
+  updateActions();
+  status('bulk-status', 'Checking queued changes in Silo…');
+  try {
+    for (const entry of entries) {
+      let summary;
+      try {
+        if (!entry.payload) throw new Error('Needs a poster and at least two matches in one library.');
+        const result = await post(entry.route, { ...entry.payload, dryRun: true });
+        summary = result.action + ' · ' + entry.title;
+        if (result.libraries?.length) summary += ' · ' + result.libraries.join(', ');
+        if (result.memberCount) summary += ' · ' + result.memberCount + ' selected titles';
+        if (result.skippedLibraries?.length) summary += ' · Skip ' + result.skippedLibraries.join(', ') + ' (fewer than two titles)';
+      } catch (error) { summary = 'Skip · ' + entry.title + ' · ' + error.message; }
+      plan.append(create('li', summary));
+    }
+    status('bulk-status', 'Preview complete. Apply ready to submit the changes.');
+  } finally {
+    state.busy = false;
+    drawQueue();
+    updateActions();
+  }
+};
+
+async function applyBulk(entries) {
+  if (state.busy) return;
+  state.busy = true;
+  el('bulk-plan').hidden = true;
   drawRows();
   updateActions();
   let imported = 0;
-  let failed = 0;
-  let warnings = 0;
-  let skipped = 0;
   let edited = 0;
-  for (const [key] of state.selected) {
-    const draft = state.drafts.get(key);
-    if (!ready(draft)) continue;
-    status('bulk-status', `Importing ${draft.title}…`);
-    try {
-      const result = await importDraft(draft);
-      if (result.warning) warnings++;
-      skipped += result.skippedLibraries?.length ?? 0;
-      state.selected.delete(key);
-      state.drafts.delete(key);
-      imported++;
-    } catch (error) { draft.error = error.message; failed++; }
-  }
-  for (const [id, draft] of state.edits) {
-    status('bulk-status', `Saving changes to ${draft.payload.title}…`);
-    try {
-      await post('edit', draft.payload);
-      state.edits.delete(id);
-      edited++;
-      if (state.editing?.id === id) {
-        await openExisting(draft.collection, draft.franchise);
-        status('publish-status', `Saved “${draft.payload.title}” in Silo.`);
+  let failed = 0;
+  try {
+    for (const entry of entries) {
+      if (!entry.payload) continue;
+      status('bulk-status', 'Saving ' + entry.title + '…');
+      try {
+        const result = await post(entry.route, entry.payload);
+        const note = [result.warning, result.skippedLibraries?.length ? 'Skipped: ' + result.skippedLibraries.join(', ') : ''].filter(Boolean).join(' · ');
+        if (entry.route === 'edit') {
+          state.edits.delete(entry.key);
+          edited++;
+        } else {
+          state.selected.delete(entry.key);
+          state.drafts.delete(entry.key);
+          imported++;
+        }
+        recordBulk(entry, entry.route === 'edit' ? 'Updated' : 'Imported', note);
+        if (entry.route === 'edit' && state.editing?.id === entry.key) {
+          await openExisting(state.editing, state.artworkFranchise);
+        }
+      } catch (error) {
+        const draft = (entry.route === 'edit' ? state.edits : state.drafts).get(entry.key);
+        if (draft) draft.error = error.message;
+        recordBulk(entry, 'Failed', error.message);
+        failed++;
       }
-    } catch (error) {
-      draft.error = error.message;
-      failed++;
     }
+    await refreshExisting();
+    status('bulk-status', imported + ' imported · ' + edited + ' updated.' + (failed ? ' ' + failed + ' failed. See bulk history for details.' : ''));
+  } finally {
+    state.busy = false;
+    drawRows();
+    updateActions();
   }
-  await refreshExisting();
-  state.busy = false;
-  drawRows();
-  updateActions();
-  status('bulk-status', [
-    `${imported} imported · ${edited} updated.`, failed ? `${failed} failed. See the queue for details.` : '',
-    skipped ? `${skipped} library selections had fewer than two titles and were skipped.` : '',
-    warnings ? `${warnings} imported with incomplete TMDb metadata.` : '',
-  ].filter(Boolean).join(' '));
-};
+}
+el('import-bulk').onclick = () => applyBulk(bulkEntries());
 
 el('publish').onclick = async () => {
   state.busy = true;
@@ -712,9 +900,7 @@ el('publish').onclick = async () => {
     await refreshExisting();
     if (editing && state.editing === editing) {
       state.editing = await api('collection?' + params({ id: editing.id }));
-      state.sortTouched = false;
-      el('sort-silo').checked = state.editing.titleSort;
-      showPoster(null);
+          showPoster(null);
       chooseBackdrop(null);
       el('tv-backdrop-url').value = '';
       invalidateMatches();
@@ -743,14 +929,16 @@ el('hide-existing').onchange = () => {
 };
 el('collection-title').oninput = () => { status('selection-title', el('collection-title').value || 'Your collection'); updateActions(); };
 el('description').oninput = () => { state.descriptionDirty = true; };
-el('sort-silo').onchange = () => { state.sortTouched = true; };
 el('sync-tmdb').onchange = (event) => {
   el('sync-note').hidden = !event.target.checked;
-  for (const input of el('matches').querySelectorAll('input')) {
-    input.disabled = event.target.checked;
-    if (event.target.checked) input.checked = true;
+  if (event.target.checked && Object.keys(state.overrides).length) {
+    invalidateMatches();
+    status('match-status', 'Preview again to use TMDb sync.');
+    return;
   }
-  updateActions();
+  closeManualMatch();
+  if (state.matches.length) renderMatches(state.matches, checked('matches'));
+  else updateActions();
 };
 for (const button of document.querySelectorAll('[data-provider]')) {
   button.hidden = kind === 'series' && button.dataset.provider === 'tmdb';
@@ -768,6 +956,7 @@ function updateSortOptions() {
   el('sort-popular').disabled = !available;
   if (!available && el('franchise-sort').value === 'popular') el('franchise-sort').value = 'default';
   el('hide-existing-field').hidden = state.provider === 'silo';
+  el('silo-order').hidden = state.provider !== 'silo';
 }
 updateSortOptions();
 el(kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
