@@ -86,7 +86,8 @@ async function preview(data) {
   if (libraryIds.some((id) => !libraries.some((library) => library.id === id && [libraryType, 'mixed'].includes(library.type)))) {
     throw new AppError(400, 'A selected Silo library is unavailable for this media type.');
   }
-  return { detail, libraryIds, matches: matchMembers(detail.members, await silo.catalog(libraryIds, data.kind)) };
+  const libraryNames = new Map(libraries.map(({ id, name }) => [id, name]));
+  return { detail, libraryIds, libraryNames, matches: matchMembers(detail.members, await silo.catalog(libraryIds, data.kind)) };
 }
 
 async function browseTVDb(query, cursor, kind) {
@@ -171,9 +172,10 @@ createServer(async (req, res) => {
       }
     }
     if (req.method === 'POST' && path === '/api/preview') {
-      const { matches } = await preview(await body(req));
-      return send(res, 200, matches.map(({ match, title, type, year, basis }) => ({
+      const { matches, libraryIds, libraryNames } = await preview(await body(req));
+      return send(res, 200, matches.map(({ match, title, type, year, basis, libraryIds: found = [] }) => ({
         title, type, year, basis, contentId: match?.content_id, localTitle: match?.title,
+        libraries: libraryIds.filter((id) => found.includes(id)).map((id) => libraryNames.get(id)),
       })));
     }
     if (req.method === 'POST' && path === '/api/edit') {
