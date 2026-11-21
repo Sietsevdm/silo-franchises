@@ -225,7 +225,7 @@ function posterImage(poster) {
 function showPoster(poster) {
   state.poster = poster;
   el('chosen-poster').replaceChildren(...(poster ? [posterImage(poster)] : []));
-  status('poster-label', poster?.title ?? (state.editing ? 'Keeping current artwork' : 'No poster selected'));
+  status('poster-label', poster ? `${poster.title} · ${poster.creator}` : (state.editing ? 'Keeping current artwork' : 'No poster selected'));
   for (const element of el('posters').querySelectorAll('button')) element.setAttribute('aria-pressed', String(element.dataset.id === poster?.id));
   updateActions();
 }
@@ -236,21 +236,28 @@ async function listPosters(reset) {
   if (reset) {
     state.posterPage = 1;
     state.posterQuery = el('poster-query').value.trim();
+    state.posterCreator = el('poster-source').value;
     el('posters').replaceChildren();
+    el('gallery-link').hidden = true;
   }
   status('poster-status', 'Loading artwork…');
   try {
-    const result = await api('posters?' + params({ q: state.posterQuery, page: state.posterPage }));
+    const result = await api('posters?' + params({ q: state.posterQuery, page: state.posterPage, creator: state.posterCreator }));
     if (state.posterRun !== run) return;
+    if (result.gallery) {
+      el('gallery-link').href = result.gallery;
+      el('gallery-link').hidden = false;
+    }
     for (const poster of result.items) {
       const button = action('', () => showPoster(poster));
       button.dataset.id = poster.id;
       button.setAttribute('aria-pressed', String(state.poster?.id === poster.id));
-      button.append(posterImage(poster), create('span', poster.title));
+      button.append(posterImage(poster), create('span', poster.title), create('small', poster.creator));
       el('posters').append(button);
     }
     el('more-posters').hidden = !result.more;
-    status('poster-status', result.items.length ? '' : 'No posters found. Try a shorter title or browse all.');
+    const unavailable = result.unavailable?.length ? `Could not load: ${result.unavailable.join(', ')}.` : '';
+    status('poster-status', [result.items.length ? '' : 'No posters found. Try a shorter title or browse all.', unavailable].filter(Boolean).join(' '));
   } catch (error) { if (state.posterRun === run) status('poster-status', error.message); }
 }
 
@@ -260,7 +267,7 @@ function draftFor(item) {
 }
 const ready = (draft) => !!(draft?.poster && draft?.contentIds.length && draft?.libraryIds.length);
 const importDraft = (draft) => post('import', { provider: draft.provider, id: draft.id, kind: draft.kind,
-  libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, posterId: draft.poster.id });
+  libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, posterId: draft.poster.id, posterCreator: draft.poster.creator });
 
 function drawQueue() {
   const available = state.rows.filter((item) => item.provider !== 'silo' && !matchesFor(item).length);
@@ -311,6 +318,7 @@ el('prepare-bulk').onclick = async () => {
     return;
   }
   state.busy = true;
+  const creator = el('poster-source').value;
   drawRows();
   updateActions();
   try {
@@ -323,9 +331,9 @@ el('prepare-bulk').onclick = async () => {
         draft.contentIds = [...new Set(draft.matches.map((match) => match.contentId).filter(Boolean))];
         const query = item.title.replace(/^the\s+|\s+(?:franchise|collection|universe)$/gi, '').trim();
         if (query) {
-          const result = await api('posters?' + params({ q: query, page: 1 }));
+          const result = await api('posters?' + params({ q: query, page: 1, creator }));
           const exact = result.items.filter((poster) => titleKey(poster.title) === titleKey(item.title));
-          if (exact.length === 1 && !result.more) draft.poster = exact[0];
+          if (exact.length === 1 && !result.more && !result.unavailable?.length) draft.poster = exact[0];
         }
       } catch (error) { draft.error = error.message; }
       state.drafts.set(key, draft);
@@ -373,7 +381,7 @@ el('publish').onclick = async () => {
   try {
     const result = editing
       ? await post('edit', { id: editing.id, etag: editing.etag, title: el('collection-title').value,
-        description: el('description').value, posterId: state.poster?.id })
+        description: el('description').value, posterId: state.poster?.id, posterCreator: state.poster?.creator })
       : await importDraft(draftFor(item));
     if (item) { state.selected.delete(itemKey(item)); state.drafts.delete(itemKey(item)); }
     await refreshExisting();
@@ -387,6 +395,7 @@ el('publish').onclick = async () => {
 };
 
 el('all-posters').onclick = () => { el('poster-query').value = ''; listPosters(true); };
+el('poster-source').onchange = () => listPosters(true);
 el('more-posters').onclick = () => { state.posterPage++; listPosters(false); };
 el('more-franchises').onclick = () => { state.page++; listFranchises(false); };
 el('poster-form').onsubmit = (event) => { event.preventDefault(); listPosters(true); };
