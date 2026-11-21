@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { AppError, gallery, normalize, providers } from './providers.mjs';
+import { AppError, galleryUrl, normalize, posterSources, providers } from './providers.mjs';
 import { matchMembers, siloClient } from './silo.mjs';
 
 const env = process.env;
@@ -156,8 +156,17 @@ createServer(async (req, res) => {
       if (path === '/api/posters') {
         const number = page(input);
         const query = (input.get('q') ?? '').slice(0, 150).trim();
-        const result = query ? filter(await source.posterIndex(), query, number, 24) : await source.galleryPage(number);
-        return send(res, 200, { ...result, gallery });
+        const creator = input.get('creator') || posterSources[0];
+        if (creator !== 'all' && !posterSources.includes(creator)) throw new AppError(400, 'Choose a configured poster source.');
+        const creators = creator === 'all' ? posterSources : [creator];
+        const results = await Promise.allSettled(creators.map(async (name) =>
+          query ? { items: await source.posterIndex(name) } : source.galleryPage(name, number)));
+        const available = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
+        if (!available.length) throw results[0].reason;
+        const items = [...new Map(available.flatMap((result) => result.items).map((item) => [item.id, item])).values()];
+        const result = query ? filter(items, query, number, 24) : { items, more: available.some((item) => item.more) };
+        const unavailable = creators.filter((_, index) => results[index].status === 'rejected');
+        return send(res, 200, { ...result, unavailable, gallery: creator === 'all' ? null : galleryUrl(creator) });
       }
     }
     if (req.method === 'POST' && path === '/api/preview') {
@@ -177,8 +186,8 @@ createServer(async (req, res) => {
       let poster;
       if (data.posterId != null) {
         if (typeof data.posterId !== 'string' || !/^\d{1,15}$/.test(data.posterId)) throw new AppError(400, 'Invalid poster.');
-        poster = await source.posterById(data.posterId);
-        if (!poster) throw new AppError(404, 'That poster is unavailable in the RedHeadJedi gallery.');
+        poster = await source.posterById(data.posterId, data.posterCreator);
+        if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
       }
       const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag });
       return send(res, 200, publicCollection(updated));
@@ -195,8 +204,8 @@ createServer(async (req, res) => {
       const permitted = new Map(matches.filter((m) => m.match).map((m) => [m.match.content_id, m.match]));
       const members = [...new Set(data.contentIds)].map((id) => permitted.get(id));
       if (members.some((m) => !m)) throw new AppError(409, 'Library matches changed. Preview again before importing.');
-      const poster = await source.posterById(data.posterId);
-      if (!poster) throw new AppError(404, 'That poster is unavailable in the RedHeadJedi gallery.');
+      const poster = await source.posterById(data.posterId, data.posterCreator);
+      if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
       return send(res, 201, await silo.publish({ detail, title, libraryIds, members, poster }));
     }
     return send(res, 404, { error: 'Page not found.' });
