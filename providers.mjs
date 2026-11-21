@@ -76,7 +76,12 @@ export function parseGallery(page) {
 
 export function parseTVIndex(page) {
   return [...page.matchAll(/<h3\b[^>]*>\s*<a\b[^>]*href="\/lists\/([\w-]+)"[^>]*>([\s\S]*?)<\/a>/gi)]
-    .map(([, id, title]) => ({ id, title: decode(title), provider: 'tvdb', url: `${tvdb}/lists/${id}` }));
+    .map((match) => {
+      const [, id, title] = match;
+      const after = page.slice(match.index + match[0].length, match.index + match[0].length + 400);
+      const stars = after.split(/<h3\b/i)[0].match(/class="fa fa-star"[^>]*><\/i>\s*([\d,]+)/i)?.[1];
+      return { id, title: decode(title), provider: 'tvdb', url: `${tvdb}/lists/${id}`, stars: stars ? Number(stars.replaceAll(',', '')) : 0 };
+    });
 }
 
 export function parseTVMembers(page) {
