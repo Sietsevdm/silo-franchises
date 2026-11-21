@@ -34,6 +34,19 @@ export function matchMembers(members, catalog) {
   });
 }
 
+export function eligibleCollection(libraryIds, members) {
+  const counts = new Map(libraryIds.map((id) => [id, new Set()]));
+  for (const member of members) {
+    for (const id of member.previewLibraryIds) counts.get(id)?.add(member.content_id);
+  }
+  const eligible = libraryIds.filter((id) => counts.get(id).size >= 2);
+  return {
+    libraryIds: eligible,
+    skipped: libraryIds.filter((id) => !eligible.includes(id)),
+    members: members.filter((member) => member.previewLibraryIds.some((id) => eligible.includes(id))),
+  };
+}
+
 function imageType(buffer) {
   if (buffer.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) return ['image/jpeg', 'jpg'];
   if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return ['image/png', 'png'];
@@ -147,19 +160,48 @@ export function siloClient(base, token) {
     return form;
   }
 
-  async function updateCollection({ id, title, description, poster, etag }) {
+  async function updateCollection({ id, title, description, poster, etag, members = [] }) {
     const form = poster ? await prepareArtwork(poster.image, 'ThePosterDB artwork') : null;
     const current = await getCollection(id);
     if (!current.etag || current.etag !== etag) {
       throw new AppError(412, 'This collection changed in Silo. Reopen it before saving.');
     }
     const path = collectionPath(id);
+    let additions = [];
+    let position = 0;
+    if (members.length) {
+      if (current.value.collection_type !== 'manual') throw new AppError(422, 'Only manual Silo collections accept individual titles.');
+      const allowed = current.value.library_ids?.length ? current.value.library_ids : [current.value.library_id];
+      if (members.some((item) => !item.previewLibraryIds.some((library) => allowed.includes(library)))) {
+        throw new AppError(422, 'Only titles from this collection’s libraries can be added.');
+      }
+      const existing = new Set();
+      const cursors = new Set();
+      let cursor;
+      do {
+        const query = new URLSearchParams({ limit: '200' });
+        if (cursor) query.set('cursor', cursor);
+        const page = await call(path + '/items?' + query);
+        for (const item of page.items) {
+          existing.add(item.media_item_id);
+          position = Math.max(position, item.position + 1);
+        }
+        cursor = page.page?.has_more ? page.page.next_cursor : null;
+        if (page.page?.has_more && (!cursor || cursors.has(cursor))) throw new AppError(502, 'Silo returned an invalid collection cursor.');
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      additions = members.filter((item) => !existing.has(item.content_id));
+    }
     const updated = await call(path, { method: 'PATCH', etag, body: { title, description } });
+    for (const item of additions) {
+      try { await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position: position++ } }); }
+      catch (error) { throw new AppError(error.status ?? 502, 'Collection details were saved, but adding titles was interrupted. Reopen the collection and retry.'); }
+    }
     if (form) {
       try { await call(path + '/poster', { method: 'PUT', body: form }); }
       catch (error) { throw new AppError(error.status ?? 502, 'Title and description were saved, but the poster upload failed. Reopen the collection and retry the poster.'); }
     }
-    return updated;
+    return members.length ? { ...updated, added: additions.length } : updated;
   }
   const active = new Set();
   async function publish({ detail, title, libraryIds, members, poster, description, backdrop }) {
