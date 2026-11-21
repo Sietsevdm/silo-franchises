@@ -7,8 +7,17 @@ const state = { provider: kind === 'series' ? 'tvdb' : 'tmdb', selected: new Map
 const titleKey = (title) => title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/\b(?:franchise|collection|universe)\s*$/, '').replace(/^the\s+/, '').replace(/[^a-z0-9]/g, '');
 const sourceKey = (url) => (url ?? '').replace(/^https?:\/\/(?:www\.)?/, '').replace(/\/$/, '');
+function franchiseFromCollection(collection) {
+  const source = sourceKey(collection.sourceUrl);
+  const movie = source.match(/^themoviedb\.org\/collection\/(\d+)(?:-[\w-]+)?$/);
+  const tvdb = source.match(/^thetvdb\.com\/lists\/([\w-]+)$/);
+  if (movie && kind === 'movie') return { provider: 'tmdb', id: movie[1] };
+  if (tvdb) return { provider: 'tvdb', id: tvdb[1] };
+  return null;
+}
 const itemKey = ({ provider, id }) => `${provider}:${id}`;
 const inputCheck = (value, selected, action) => Object.assign(create('input'), { type: 'checkbox', value, checked: selected, onchange: action });
+const sortedTitles = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
 
 async function api(route, options = {}) {
   const response = await fetch('/api/' + route, options);
@@ -61,7 +70,7 @@ function drawRows() {
       row.append(box, action(item.title, () => openFranchise(item), 'row-title'));
       row.classList.toggle('active', !!state.current && itemKey(state.current) === key);
       for (const collection of existing) {
-        const edit = action('In Silo · Edit', () => openExisting(collection), 'edit');
+        const edit = action('In Silo · Edit', () => openExisting(collection, item), 'edit');
         edit.title = collection.title;
         row.append(edit);
       }
@@ -78,15 +87,25 @@ async function listFranchises(reset) {
     state.page = 1;
     state.cursor = 0;
     state.query = el('franchise-query').value.trim();
+    state.sort = el('franchise-sort').value;
     state.rows = [];
     drawRows();
   }
   status('franchise-status', 'Loading…');
   try {
     if (state.provider === 'silo' && state.existingError) throw new Error(state.existingError);
-    const result = state.provider === 'silo'
-      ? { items: state.existing.filter((item) => isCurrentKind(item) && item.title.toLowerCase().includes(state.query.toLowerCase())).map((item) => ({ ...item, provider: 'silo' })) }
-      : await api('franchises?' + params({ provider: state.provider, kind, q: state.query, page: state.page, cursor: state.cursor }));
+    let result;
+    if (state.provider === 'silo') {
+      const items = state.existing.filter((item) => isCurrentKind(item) && item.title.toLowerCase().includes(state.query.toLowerCase()))
+        .map((item) => ({ ...item, provider: 'silo' }));
+      if (state.sort === 'title-asc' || state.sort === 'title-desc') {
+        const direction = state.sort === 'title-asc' ? 1 : -1;
+        items.sort((a, b) => direction * sortedTitles.compare(a.title, b.title));
+      }
+      result = { items };
+    } else {
+      result = await api('franchises?' + params({ provider: state.provider, kind, q: state.query, page: state.page, cursor: state.cursor, sort: state.sort }));
+    }
     if (state.franchiseRun !== run) return;
     state.rows.push(...result.items);
     state.cursor = result.next ?? 0;
@@ -110,6 +129,11 @@ function openPanel(title, editing) {
   el('selection').hidden = false;
   el('poster-tools').hidden = false;
   el('membership').hidden = editing;
+  for (const check of el('libraries').querySelectorAll('input')) {
+    check.disabled = false;
+    check.closest('label').hidden = false;
+  }
+  status('library-eligibility', '');
   el('description-field').hidden = false;
   el('description').value = '';
   state.descriptionDirty = false;
@@ -135,6 +159,7 @@ function openPanel(title, editing) {
 
 async function openFranchise(item) {
   state.editing = null;
+  state.editFranchise = null;
   state.current = item;
   const draft = state.drafts.get(itemKey(item));
   openPanel(draft?.title ?? item.title, false);
@@ -181,9 +206,10 @@ async function loadMetadata(item) {
   }
 }
 
-async function openExisting(item) {
+async function openExisting(item, franchise = null) {
   state.current = null;
   state.editing = null;
+  state.editFranchise = null;
   openPanel(item.title, true);
   el('description').value = '';
   status('detail-status', 'Loading Silo collection…');
@@ -192,9 +218,20 @@ async function openExisting(item) {
     const result = await api('collection?' + params({ id: item.id }));
     if (state.editRun !== run || state.current) return;
     state.editing = result;
+    state.editFranchise = result.kind === 'manual' ? franchise ?? franchiseFromCollection(result) : null;
+    if (state.editFranchise) {
+      let available = 0;
+      for (const check of el('libraries').querySelectorAll('input')) {
+        check.checked = result.libraryIds.includes(check.value);
+        check.disabled = true;
+        check.closest('label').hidden = !check.checked;
+        if (check.checked) available++;
+      }
+      el('membership').hidden = !available;
+    }
     el('collection-title').value = result.title;
     el('description').value = result.description;
-    status('detail-status', `Editing Silo collection · ${result.count ?? 0} titles`);
+    status('detail-status', `Editing Silo collection · ${result.count ?? 0} titles${el('membership').hidden ? '' : ' · Preview library matches to add titles'}`);
     if (!state.poster) status('poster-label', 'Current artwork will be kept unless you select a replacement.');
     updateActions();
   } catch (error) {
@@ -207,6 +244,7 @@ function invalidateMatches() {
   state.matches = [];
   el('matches').replaceChildren();
   status('match-status', '');
+  status('library-eligibility', '');
   updateActions();
 }
 
@@ -239,12 +277,30 @@ function renderMatches(result, chosen) {
 }
 
 function canImport() {
-  return state.current && !matchesFor(state.current).length && state.poster && checked('matches').length && checked('libraries').length;
+  return state.current && !matchesFor(state.current).length && state.poster &&
+    [...libraryCounts(state.matches, checked('matches'), checked('libraries')).values()].some((count) => count >= 2);
+}
+function libraryCounts(matches, contentIds, libraryIds) {
+  const selected = new Set(contentIds);
+  const perLibrary = new Map(libraryIds.map((id) => [id, new Set()]));
+  for (const match of matches ?? []) {
+    if (!selected.has(match.contentId)) continue;
+    for (const id of match.libraryIds ?? []) perLibrary.get(id)?.add(match.contentId);
+  }
+  return new Map([...perLibrary].map(([id, items]) => [id, items.size]));
 }
 function updateActions() {
   const valid = Boolean(el('collection-title').value.trim());
   el('publish').disabled = !!state.busy || !valid || !(state.editing || canImport());
   el('queue-current').disabled = !!state.busy || !valid || !canImport();
+  if (state.current && state.matches?.length) {
+    const counts = libraryCounts(state.matches, checked('matches'), checked('libraries'));
+    const summary = [...counts].map(([id, count]) => {
+      const name = state.libraries.find((library) => library.id === id)?.name ?? id;
+      return `${name}: ${count} selected${count < 2 ? ' (needs 2)' : ''}`;
+    });
+    status('library-eligibility', summary.join(' · '));
+  } else status('library-eligibility', '');
 }
 
 async function loadLibraries() {
@@ -267,7 +323,7 @@ el('preview').onclick = async () => {
   const run = state.previewRun = Symbol();
   status('match-status', 'Matching your library…');
   try {
-    const result = await post('preview', requestFor(state.current, checked('libraries')));
+    const result = await post('preview', requestFor(state.current ?? state.editFranchise, checked('libraries')));
     if (state.previewRun === run) renderMatches(result);
   } catch (error) { if (state.previewRun === run) status('match-status', error.message); }
 };
@@ -320,7 +376,8 @@ function draftFor(item) {
     description: state.descriptionDirty || state.metadataLoaded ? el('description').value : undefined,
     includeBackdrop: el('include-backdrop').checked };
 }
-const ready = (draft) => !!(draft?.poster && draft?.contentIds.length && draft?.libraryIds.length);
+const ready = (draft) => !!draft?.poster &&
+  [...libraryCounts(draft.matches, draft.contentIds, draft.libraryIds).values()].some((count) => count >= 2);
 const importDraft = (draft) => post('import', { provider: draft.provider, id: draft.id, kind: draft.kind,
   libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, posterId: draft.poster.id,
   posterCreator: draft.poster.creator, description: draft.description, includeBackdrop: draft.includeBackdrop });
@@ -342,7 +399,7 @@ function drawQueue() {
     const row = create('div');
     row.className = 'queue-row';
     row.append(action(item.title, () => openFranchise(item), 'row-title'),
-      create('small', draft?.error ?? (ready(draft) ? 'Ready' : draft ? 'Needs a poster or matching titles' : 'Needs preparation')));
+      create('small', draft?.error ?? (ready(draft) ? 'Ready' : draft ? 'Needs a poster and 2 titles in one library' : 'Needs preparation')));
     queue.append(row);
   }
   el('prepare-bulk').disabled = !state.selected.size || !!state.busy;
@@ -410,6 +467,7 @@ el('import-bulk').onclick = async () => {
   let imported = 0;
   let failed = 0;
   let warnings = 0;
+  let skipped = 0;
   for (const [key] of state.selected) {
     const draft = state.drafts.get(key);
     if (!ready(draft)) continue;
@@ -417,6 +475,7 @@ el('import-bulk').onclick = async () => {
     try {
       const result = await importDraft(draft);
       if (result.warning) warnings++;
+      skipped += result.skippedLibraries?.length ?? 0;
       state.selected.delete(key);
       state.drafts.delete(key);
       imported++;
@@ -426,7 +485,11 @@ el('import-bulk').onclick = async () => {
   state.busy = false;
   drawRows();
   updateActions();
-  status('bulk-status', `${imported} imported. ${failed ? `${failed} failed. See the queue for details. ` : ''}${warnings ? `${warnings} imported with incomplete TMDb metadata.` : ''}`.trim());
+  status('bulk-status', [
+    `${imported} imported.`, failed ? `${failed} failed. See the queue for details.` : '',
+    skipped ? `${skipped} library selections had fewer than two titles and were skipped.` : '',
+    warnings ? `${warnings} imported with incomplete TMDb metadata.` : '',
+  ].filter(Boolean).join(' '));
 };
 
 el('publish').onclick = async () => {
@@ -438,16 +501,24 @@ el('publish').onclick = async () => {
   status('publish-status', 'Saving to Silo…');
   try {
     const result = editing
-      ? await post('edit', { id: editing.id, etag: editing.etag, title: el('collection-title').value,
-        description: el('description').value, posterId: state.poster?.id, posterCreator: state.poster?.creator })
+      ? await post('edit', { collectionId: editing.id, etag: editing.etag, title: el('collection-title').value,
+        description: el('description').value, posterId: state.poster?.id, posterCreator: state.poster?.creator,
+        ...(state.editFranchise && checked('matches').length
+          ? { ...requestFor(state.editFranchise, checked('libraries')), contentIds: checked('matches') } : {}) })
       : await importDraft(draftFor(item));
     if (item) { state.selected.delete(itemKey(item)); state.drafts.delete(itemKey(item)); }
     await refreshExisting();
     if (editing && state.editing === editing) {
       state.editing = await api('collection?' + params({ id: editing.id }));
       showPoster(null);
+      invalidateMatches();
     }
-    if ((item && item === state.current) || (editing && editing.id === state.editing?.id)) status('publish-status', result.warning ?? `Saved “${result.title}” in Silo.`);
+    if ((item && item === state.current) || (editing && editing.id === state.editing?.id)) {
+      status('publish-status', [`Saved “${result.title}” in Silo.`,
+        editing && result.added != null ? `${result.added} new titles added.` : '',
+        result.skippedLibraries?.length ? `Skipped libraries with fewer than two titles: ${result.skippedLibraries.join(', ')}.` : '',
+        result.warning].filter(Boolean).join(' '));
+    }
   } catch (error) { status('publish-status', error.message); }
   finally { state.busy = false; drawRows(); updateActions(); }
 };
@@ -458,6 +529,7 @@ el('more-posters').onclick = () => { state.posterPage++; listPosters(false); };
 el('more-franchises').onclick = () => { state.page++; listFranchises(false); };
 el('poster-form').onsubmit = (event) => { event.preventDefault(); listPosters(true); };
 el('franchise-form').onsubmit = (event) => { event.preventDefault(); listFranchises(true); };
+el('franchise-sort').onchange = () => listFranchises(true);
 el('collection-title').oninput = () => { status('selection-title', el('collection-title').value || 'Your collection'); updateActions(); };
 el('description').oninput = () => { state.descriptionDirty = true; };
 for (const button of document.querySelectorAll('[data-provider]')) {
@@ -465,10 +537,18 @@ for (const button of document.querySelectorAll('[data-provider]')) {
   button.setAttribute('aria-pressed', String(button.dataset.provider === state.provider));
   button.onclick = () => {
     state.provider = button.dataset.provider;
+    updateSortOptions();
     for (const other of document.querySelectorAll('[data-provider]')) other.setAttribute('aria-pressed', String(button === other));
     listFranchises(true);
   };
 }
+function updateSortOptions() {
+  const available = state.provider === 'tvdb';
+  el('sort-popular').hidden = !available;
+  el('sort-popular').disabled = !available;
+  if (!available && el('franchise-sort').value === 'popular') el('franchise-sort').value = 'default';
+}
+updateSortOptions();
 el(kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
 status('page-title', kind === 'series' ? 'TV Franchises' : 'Movie Franchises');
 void listFranchises(true);
