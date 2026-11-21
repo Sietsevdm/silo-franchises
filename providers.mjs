@@ -1,6 +1,9 @@
 import { gunzipSync } from 'node:zlib';
 
-export const posterSources = ['RedHeadJedi', 'ishalioh', 'ashlyfxxk', 'XDM', 'mikenobbs'];
+export const posterSources = [
+  'RedHeadJedi', 'ishalioh', 'ashlyfxxk', 'XDM', 'mikenobbs',
+  'DarkMatte', 'DIIIVOY', 'cmanuelg1989', 'KyleKahotek', 'j.zapattack',
+];
 export function galleryUrl(creator) {
   if (!posterSources.includes(creator)) throw new AppError(400, 'Choose a configured ThePosterDB source.');
   return `https://theposterdb.com/user/${creator}?category=Collections&textless=Non-Textless&language=en&sort=Recent&variation=orig&section=uploads`;
