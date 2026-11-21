@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { AppError, galleryUrl, normalize, posterSources, providers } from './providers.mjs';
 import { eligibleCollection, matchMembers, siloClient } from './silo.mjs';
+import { publicArtworkUrl } from './remote-artwork.mjs';
 
 const env = process.env;
 if (!env.APP_PASSWORD || env.APP_PASSWORD.length < 16) throw new Error('Set APP_PASSWORD to at least 16 characters.');
@@ -96,6 +97,21 @@ async function preview(data) {
   return { detail, libraryIds, libraryNames, matches: matchMembers(detail.members, await silo.catalog(libraryIds, data.kind)) };
 }
 
+async function selectedBackdrop(data) {
+  if (data.kind === 'series' && data.backdropUrl != null) {
+    if (typeof data.backdropUrl !== 'string' || data.backdropUrl.length > 2048) throw new AppError(400, 'Enter a direct public HTTPS image URL.');
+    if (data.backdropUrl.trim()) return { backdrop: publicArtworkUrl(data.backdropUrl.trim()).href, customBackdrop: true };
+  }
+  if (data.kind === 'movie' && data.backdropPath != null) {
+    if (typeof data.backdropPath !== 'string') throw new AppError(400, 'Choose a backdrop from this franchise.');
+    const franchise = key(data.provider, data.id, data.kind);
+    const option = (await source.backdrops(franchise)).items.find((item) => item.path === data.backdropPath);
+    if (!option) throw new AppError(400, 'Choose a backdrop from this franchise.');
+    return { backdrop: option.image };
+  }
+  return {};
+}
+
 async function browseTVDb(query, cursor, kind, sort) {
   const candidates = filter(await source.tvIndex(), query, 1, Number.MAX_SAFE_INTEGER, sort).items;
   const size = 12;
@@ -162,6 +178,10 @@ createServer(async (req, res) => {
       }
       if (path === '/api/detail') return send(res, 200, await source.details(key(input.get('provider'), input.get('id'), input.get('kind'))));
       if (path === '/api/metadata') return send(res, 200, await source.metadata(key(input.get('provider'), input.get('id'), input.get('kind'))));
+      if (path === '/api/backdrops') {
+        if (input.get('kind') !== 'movie') throw new AppError(400, 'TMDb backdrop choices are available for movie franchises.');
+        return send(res, 200, await source.backdrops(key(input.get('provider'), input.get('id'), 'movie')));
+      }
       if (path === '/api/posters') {
         const number = page(input);
         const query = (input.get('q') ?? '').slice(0, 150).trim();
@@ -212,7 +232,8 @@ createServer(async (req, res) => {
           if (members.some((item) => !item)) throw new AppError(409, 'Library matches changed. Preview again before saving.');
         }
       }
-      const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members });
+      const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members,
+        ...await selectedBackdrop(data) });
       return send(res, 200, { ...publicCollection(updated), added: updated.added });
     }
     if (req.method === 'POST' && path === '/api/import') {
@@ -225,8 +246,10 @@ createServer(async (req, res) => {
         throw new AppError(400, 'Choose a title, a poster, and at least one matched library item.');
       }
       const { detail, libraryIds, libraryNames, matches } = await preview(data);
+      const sync = data.sync === true;
+      if (sync && (data.provider !== 'tmdb' || data.kind !== 'movie')) throw new AppError(400, 'TMDb sync is available for TMDb movie collections.');
       const permitted = new Map(matches.filter((m) => m.match).map((m) => [m.match.content_id, m.match]));
-      const members = [...new Set(data.contentIds)].map((id) => permitted.get(id));
+      const members = sync ? [...permitted.values()] : [...new Set(data.contentIds)].map((id) => permitted.get(id));
       if (members.some((m) => !m)) throw new AppError(409, 'Library matches changed. Preview again before importing.');
       const eligible = eligibleCollection(libraryIds, members);
       if (!eligible.libraryIds.length) throw new AppError(422, 'Select at least two matched titles in the same library to create a collection.');
@@ -236,11 +259,12 @@ createServer(async (req, res) => {
       let warning;
       if (!metadata && (data.description == null || data.includeBackdrop !== false)) {
         try { metadata = await source.metadata(key(data.provider, data.id, data.kind)); }
-        catch { warning = 'TMDb metadata could not be loaded.'; }
+        catch { warning = `${data.kind === 'series' ? 'TheTVDB' : 'TMDb'} metadata could not be loaded.`; }
       }
+      const chosen = await selectedBackdrop(data);
       const result = await silo.publish({ detail, title, libraryIds: eligible.libraryIds, members: eligible.members, poster,
-        description: data.description ?? metadata?.description?.slice(0, 8000),
-        backdrop: data.includeBackdrop === false ? '' : metadata?.backdrop });
+        description: data.description ?? metadata?.description?.slice(0, 8000), sync,
+        backdrop: data.kind === 'movie' && data.includeBackdrop !== false ? metadata?.backdrop : '', ...chosen });
       return send(res, 201, { ...result, warning: result.warning ?? warning,
         skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)) });
     }
