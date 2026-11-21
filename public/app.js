@@ -214,6 +214,8 @@ function openPanel(title, editing) {
   el('movie-backdrop-tools').hidden = true;
   status('backdrop-status', '');
   el('sync-field').hidden = true;
+  el('request-missing-field').hidden = editing;
+  el('request-missing').checked = false;
   el('sync-tmdb').checked = false;
   el('sync-note').hidden = true;
   state.customPosterRun = null;
@@ -246,6 +248,7 @@ async function openFranchise(item) {
   el('movie-backdrop-tools').hidden = kind !== 'movie';
   el('sync-field').hidden = kind !== 'movie' || item.provider !== 'tmdb';
   el('sync-tmdb').checked = draft?.sync === true;
+  el('request-missing').checked = draft?.requestMissing === true;
   el('sync-note').hidden = !el('sync-tmdb').checked;
   if (draft) {
     for (const check of el('libraries').querySelectorAll('input')) check.checked = draft.libraryIds.includes(check.value);
@@ -717,16 +720,27 @@ function draftFor(item) {
     description: state.descriptionDirty || state.metadataLoaded ? el('description').value : undefined,
     includeBackdrop: el('include-backdrop').checked, selectedBackdrop: state.selectedBackdrop,
     backdropUrl: kind === 'series' ? el('tv-backdrop-url').value.trim() : undefined,
-    sync: el('sync-tmdb').checked, overrides: state.overrides };
+    sync: el('sync-tmdb').checked, requestMissing: el('request-missing').checked, overrides: state.overrides };
 }
 const ready = (draft) => !!draft?.poster &&
   [...libraryCounts(draft.matches, draft.contentIds, draft.libraryIds).values()].some((count) => count >= 2);
 const importPayload = (draft) => ({ provider: draft.provider, id: draft.id, kind: draft.kind,
   libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, ...posterFields(draft.poster),
   description: draft.description, includeBackdrop: draft.includeBackdrop, overrides: draft.overrides,
-  backdropUrl: draft.backdropUrl, backdropPath: draft.includeBackdrop ? draft.selectedBackdrop?.path : undefined, sync: draft.sync });
+  backdropUrl: draft.backdropUrl, backdropPath: draft.includeBackdrop ? draft.selectedBackdrop?.path : undefined,
+  sync: draft.sync, requestMissing: draft.requestMissing });
 
 const importDraft = (draft) => post('import', importPayload(draft));
+function requestSummary(report) {
+  if (!report) return '';
+  return [
+    report.requested.length ? 'Requested ' + report.requested.join(', ') + '.' : '',
+    report.skipped.length ? 'Already available or requested: ' + report.skipped.join(', ') + '.' : '',
+    report.unresolved.length ? 'Missing TMDb IDs: ' + report.unresolved.join(', ') + '.' : '',
+    report.failed.length ? 'Could not confirm requests for ' + report.failed.join(', ') + '.' : '',
+    report.reason,
+  ].filter(Boolean).join(' ') || 'No missing titles to request.';
+}
 
 function editDraft(editing) {
   const libraryIds = checked('libraries');
@@ -901,6 +915,8 @@ el('dry-bulk').onclick = async () => {
         summary = result.action + ' · ' + entry.title;
         if (result.libraries?.length) summary += ' · ' + result.libraries.join(', ');
         if (result.memberCount) summary += ' · ' + result.memberCount + ' selected titles';
+        if (result.requestCandidates?.length) summary += ' · Request candidates: ' + result.requestCandidates.join(', ');
+        if (result.unresolvedRequests?.length) summary += ' · Missing TMDb IDs: ' + result.unresolvedRequests.join(', ');
         if (result.skippedLibraries?.length) summary += ' · Skip ' + result.skippedLibraries.join(', ') + ' (fewer than two titles)';
       } catch (error) { summary = 'Skip · ' + entry.title + ' · ' + error.message; }
       plan.append(create('li', summary));
@@ -928,7 +944,8 @@ async function applyBulk(entries) {
       status('bulk-status', 'Saving ' + entry.title + '…');
       try {
         const result = await post(entry.route, entry.payload);
-        const note = [result.warning, result.skippedLibraries?.length ? 'Skipped: ' + result.skippedLibraries.join(', ') : ''].filter(Boolean).join(' · ');
+        const note = [result.warning, requestSummary(result.mediaRequests),
+          result.skippedLibraries?.length ? 'Skipped: ' + result.skippedLibraries.join(', ') : ''].filter(Boolean).join(' · ');
         if (entry.route === 'edit') {
           state.edits.delete(entry.key);
           edited++;
@@ -984,7 +1001,7 @@ el('publish').onclick = async () => {
         result.synced ? 'Silo will sync it with TMDb daily.' : '',
         editing && result.added != null ? `${result.added} new titles added.` : '',
         result.skippedLibraries?.length ? `Skipped libraries with fewer than two titles: ${result.skippedLibraries.join(', ')}.` : '',
-        result.warning].filter(Boolean).join(' '));
+        result.warning, requestSummary(result.mediaRequests)].filter(Boolean).join(' '));
     }
   } catch (error) { status('publish-status', error.message); }
   finally { state.busy = false; drawRows(); updateActions(); }

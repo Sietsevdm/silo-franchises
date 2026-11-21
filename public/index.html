@@ -102,6 +102,10 @@
             </div>
             <label id="sync-field" hidden><input id="sync-tmdb" type="checkbox"> Keep collection synced with TMDb</label>
             <p id="sync-note" class="field-note" hidden>Silo follows the full TMDb collection and syncs daily. Individual title selection applies to manual collections.</p>
+            <div id="request-missing-field" hidden>
+              <label class="check-line"><input id="request-missing" type="checkbox"> Request missing titles after creating this collection</label>
+              <p class="field-note">Uses Silo Requests and its approval settings. Add fulfilled titles to manual collections from the editor.</p>
+            </div>
           </div>
           <div class="publish"><button class="accent" id="publish" type="button" disabled>Add to Silo</button> <button id="queue-current" type="button" disabled>Save to bulk queue</button><p id="publish-status" role="status"></p></div>
         </div>

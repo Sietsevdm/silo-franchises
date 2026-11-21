@@ -15,7 +15,9 @@ const source = providers(env.TMDB_READ_TOKEN);
 const posterIndex = await posterCache(posterSources, source.posterIndex, env.POSTER_INDEX_DIR);
 void posterIndex.refresh();
 setInterval(() => void posterIndex.refresh(), 30 * 60 * 1000).unref();
-const silo = siloClient(env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz', env.SILO_API_KEY);
+const silo = siloClient(env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz', env.SILO_API_KEY, {
+  requestKey: env.SILO_REQUEST_API_KEY, requestProfileId: env.SILO_REQUEST_PROFILE_ID,
+});
 const publicCollection = (item) => ({
   id: item.id, title: item.title, description: item.description ?? '', sourceUrl: item.source_url,
   libraryIds: item.library_ids?.length ? item.library_ids : [item.library_id].filter(Boolean),
@@ -354,12 +356,17 @@ createServer(async (req, res) => {
       const eligible = eligibleCollection(libraryIds, members);
       if (!eligible.libraryIds.length) throw new AppError(422, 'Select at least two matched titles in the same library to create a collection.');
       const poster = await selectedPoster(data, true);
+      const missing = data.requestMissing === true ? matches.filter((item) => item.basis === 'Missing') : [];
+      const candidates = [...new Map(missing.filter((item) => /^[1-9]\d{0,8}$/.test(item.tmdb ?? ''))
+        .map((item) => [item.tmdb, item])).values()];
+      const unresolved = missing.filter((item) => !/^[1-9]\d{0,8}$/.test(item.tmdb ?? '')).map((item) => item.title);
       if (data.dryRun === true) {
         await selectedBackdrop(data);
         const resume = await silo.planImport({ detail, title, libraryIds: eligible.libraryIds, sync });
         return send(res, 200, { action: resume ? 'Resume import' : 'Create', memberCount: eligible.members.length,
           libraries: eligible.libraryIds.map((id) => libraryNames.get(id)),
-          skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)) });
+          skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)),
+          requestCandidates: candidates.map((item) => item.title), unresolvedRequests: unresolved });
       }
       let metadata = detail.metadata;
       let warning;
@@ -371,7 +378,8 @@ createServer(async (req, res) => {
       const result = await silo.publish({ detail, title, libraryIds: eligible.libraryIds, members: eligible.members, poster,
         description: data.description ?? metadata?.description?.slice(0, 8000), sync, sort: data.sort,
         backdrop: data.kind === 'movie' && data.includeBackdrop !== false ? metadata?.backdrop : '', ...chosen });
-      return send(res, 201, { ...result, warning: result.warning ?? warning,
+      const mediaRequests = data.requestMissing === true ? { ...await silo.requestMissingMedia(candidates), unresolved } : undefined;
+      return send(res, 201, { ...result, warning: result.warning ?? warning, mediaRequests,
         skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)) });
     }
     return send(res, 404, { error: 'Page not found.' });

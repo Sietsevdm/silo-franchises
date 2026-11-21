@@ -66,7 +66,7 @@ export function previewKind(library) {
 
 const sortConfig = (sort) => sort === 'title' ? { field: 'title', order: 'asc' } : sort === 'source' ? {} : undefined;
 
-export function siloClient(base, token) {
+export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
   const root = new URL(base);
   if (!['http:', 'https:'].includes(root.protocol) || root.username || root.password || root.search || root.hash) {
     throw new Error('SILO_URL must be an HTTP(S) server URL.');
@@ -102,9 +102,11 @@ export function siloClient(base, token) {
     const seconds = Math.max(1, Math.ceil((until - Date.now()) / 1000));
     return new AppError(429, `Silo is limiting catalog requests. Wait about ${seconds} second${seconds === 1 ? '' : 's'}, then try the preview again.`, String(seconds));
   }
-  const call = async (path, { method = 'GET', body, etag, withTag = false } = {}) => {
-    if (!token) throw new AppError(503, 'Set SILO_API_KEY in the stack to connect to Silo.');
-    const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+  const call = async (path, { method = 'GET', body, etag, withTag = false, mediaRequest = false } = {}) => {
+    const credential = mediaRequest ? requestKey || token : token;
+    if (!credential) throw new AppError(503, 'Set SILO_API_KEY in the stack to connect to Silo.');
+    const headers = { Authorization: `Bearer ${credential}`, Accept: 'application/json' };
+    if (mediaRequest && requestProfileId) headers['X-Profile-Id'] = requestProfileId;
     if (etag) headers['If-Match'] = etag;
     if (body && !(body instanceof FormData)) {
       headers['Content-Type'] = 'application/json';
@@ -116,6 +118,30 @@ export function siloClient(base, token) {
     const value = await response.json();
     return withTag ? { value, etag: response.headers.get('etag') } : value;
   };
+  async function requestMissingMedia(candidates) {
+    const report = { requested: [], skipped: [], failed: [] };
+    for (const [index, { title, type, tmdb, year }] of candidates.entries()) {
+      try {
+        await call('/requests', { method: 'POST', mediaRequest: true, body: {
+          title, media_type: type, tmdb_id: Number(tmdb), year: Number(year) || undefined,
+        } });
+        report.requested.push(title);
+      } catch (error) {
+        if (error.status === 409) report.skipped.push(title);
+        else {
+          report.failed.push(title);
+          if ([401, 403, 429, 503].includes(error.status)) {
+            report.failed.push(...candidates.slice(index + 1).map((item) => item.title));
+            report.reason = error.status === 429 ? 'Silo is limiting requests or the profile reached its quota.'
+              : error.status === 503 ? 'Silo Requests is unavailable.'
+                : 'Silo rejected the request credential or profile. Check its Requests permission.';
+            break;
+          }
+        }
+      }
+    }
+    return report;
+  }
   let libraryCache;
   function libraries() {
     if (libraryCache?.expires > Date.now()) return libraryCache.pending;
@@ -340,5 +366,5 @@ export function siloClient(base, token) {
       active.delete(slug);
     }
   }
-  return { libraries, catalog, publish, planImport, collections, getCollection, collectionMemberIds, updateCollection, sortCollections };
+  return { libraries, catalog, publish, planImport, collections, getCollection, collectionMemberIds, updateCollection, sortCollections, requestMissingMedia };
 }

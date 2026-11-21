@@ -19,6 +19,27 @@ test('poster snapshots survive an app restart without another upstream request',
   await restarted.refresh();
 });
 
+test('missing media uses the request profile and respects conflicts and quotas', async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, 'https://silo.example/api/v2/requests');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.Authorization, 'Bearer request-key');
+    assert.equal(options.headers['X-Profile-Id'], 'request-profile');
+    const input = JSON.parse(options.body);
+    calls.push(input);
+    return Response.json({}, { status: [201, 409, 429][calls.length - 1] });
+  });
+  const silo = siloClient('https://silo.example', 'collection-key', { requestKey: 'request-key', requestProfileId: 'request-profile' });
+  const result = await silo.requestMissingMedia(['One', 'Two', 'Three', 'Four'].map((title, index) =>
+    ({ title, type: 'series', tmdb: String(index + 1), year: '2025' })));
+  assert.deepEqual(calls[0], { title: 'One', media_type: 'series', tmdb_id: 1, year: 2025 });
+  assert.deepEqual(result.requested, ['One']);
+  assert.deepEqual(result.skipped, ['Two']);
+  assert.deepEqual(result.failed, ['Three', 'Four']);
+  assert.equal(calls.length, 3);
+});
+
 test('extracts official lists, franchise members and attributed gallery cards', () => {
   assert.equal(parseTVIndex('<h3><a href="/lists/power">Power Franchise</a></h3>')[0].id, 'power');
   assert.equal(parseTVIndex('<h3><a href="/lists/power">Power Franchise</a></h3><i class="fa fa-star" aria-hidden="true"></i> 1,250')[0].stars, 1250);
