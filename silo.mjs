@@ -45,16 +45,18 @@ export function siloClient(base, token) {
     throw new Error('SILO_URL must be an HTTP(S) server URL.');
   }
   const prefix = root.href.replace(/\/$/, '') + '/api/v2';
-  const call = async (path, { method = 'GET', body } = {}) => {
+  const call = async (path, { method = 'GET', body, etag, withTag = false } = {}) => {
     if (!token) throw new AppError(503, 'Set SILO_API_KEY in the stack to connect to Silo.');
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+    if (etag) headers['If-Match'] = etag;
     if (body && !(body instanceof FormData)) {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(body);
     }
     const response = await request(prefix + path, { method, headers, body }, 'Silo');
     if (response.status === 204) return null;
-    return response.json();
+    const value = await response.json();
+    return withTag ? { value, etag: response.headers.get('etag') } : value;
   };
   const libraries = async () => (await call('/libraries')).items.filter((library) => library.enabled);
   const catalog = async (ids) => {
@@ -76,6 +78,32 @@ export function siloClient(base, token) {
   };
 
   const collectionsPath = '/admin/collections';
+  const collections = async () => (await call(collectionsPath)).items;
+  const collectionPath = (id) => `${collectionsPath}/${encodeURIComponent(id)}`;
+  const getCollection = (id) => call(collectionPath(id), { withTag: true });
+
+  async function preparePoster(poster) {
+    const image = await bytes(await request(poster.image, {}, 'ThePosterDB artwork'));
+    const [mime, extension] = imageType(image);
+    const form = new FormData();
+    form.append('image', new Blob([image], { type: mime }), `poster.${extension}`);
+    return form;
+  }
+
+  async function updateCollection({ id, title, description, poster, etag }) {
+    const form = poster ? await preparePoster(poster) : null;
+    const current = await getCollection(id);
+    if (!current.etag || current.etag !== etag) {
+      throw new AppError(412, 'This collection changed in Silo. Reopen it before saving.');
+    }
+    const path = collectionPath(id);
+    const updated = await call(path, { method: 'PATCH', etag, body: { title, description } });
+    if (form) {
+      try { await call(path + '/poster', { method: 'PUT', body: form }); }
+      catch (error) { throw new AppError(error.status ?? 502, 'Title and description were saved, but the poster upload failed. Reopen the collection and retry the poster.'); }
+    }
+    return updated;
+  }
   const active = new Set();
   async function publish({ detail, title, libraryIds, members, poster }) {
     const identity = JSON.stringify([detail.provider, detail.id, normalize(title), [...libraryIds].sort()]);
@@ -84,9 +112,8 @@ export function siloClient(base, token) {
     active.add(slug);
     let collection;
     try {
-      const image = await bytes(await request(poster.image, {}, 'ThePosterDB artwork'));
-      const [mime, extension] = imageType(image);
-      const existing = (await call(collectionsPath)).items;
+      const form = await preparePoster(poster);
+      const existing = await collections();
       collection = existing.find((item) => item.slug === slug && normalize(item.title) === normalize(title));
       if (!collection) {
         if (existing.some((item) => normalize(item.title) === normalize(title) &&
@@ -98,12 +125,10 @@ export function siloClient(base, token) {
         } });
       }
       if (!collection?.id) throw new AppError(502, 'Silo did not return the new collection ID.');
-      const path = `${collectionsPath}/${encodeURIComponent(collection.id)}`;
+      const path = collectionPath(collection.id);
       for (const [position, item] of members.entries()) {
         await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position } });
       }
-      const form = new FormData();
-      form.append('image', new Blob([image], { type: mime }), `poster.${extension}`);
       await call(path + '/poster', { method: 'PUT', body: form });
       return { id: collection.id, title: collection.title, added: members.length };
     } catch (error) {
@@ -115,5 +140,5 @@ export function siloClient(base, token) {
       active.delete(slug);
     }
   }
-  return { libraries, catalog, publish };
+  return { libraries, catalog, publish, collections, getCollection, updateCollection };
 }
