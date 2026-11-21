@@ -15,6 +15,7 @@ To run with Docker Compose from a shell, copy `.env.example` to `.env`, fill in 
 ## How imports work
 
 - **Movies** and **TV** open separate pages. Official lists that span both media types are filtered to movies or series before matching. The movie page also offers TMDb.
+- Opening a franchise loads its TMDb description and backdrop. For an official TheTVDB list, the app uses a related movie or show matched by an external ID and labels that title. Edit the description or turn off the backdrop before import if desired.
 - Select multiple checkboxes and choose **Prepare selected** to check them against the selected libraries. A single exact poster match is suggested automatically. Open unfinished entries to choose artwork, then choose **Save to bulk queue**. **Import ready** runs only the ready entries and reports individual failures.
 - Use **In Silo** or an **In Silo · Edit** badge to change a collection's name, description, or artwork. Saving an edit keeps its existing membership and rules.
 
@@ -22,6 +23,6 @@ To run with Docker Compose from a shell, copy `.env.example` to `.env`, fill in 
 - The **Poster source** menu supports RedHeadJedi, ishalioh, ashlyfxxk, XDM, and mikenobbs. Select one creator or search all five together. Every result shows the creator. The app uploads the optimized JPEG from the selected public gallery to Silo.
 - An import creates a manual Silo server collection with only the titles you select. It does not download media, change existing media metadata, or schedule future collection updates.
 - Existing same-name collections in the same libraries are protected. If an import creates the collection but is interrupted during member addition or upload, retry with the same franchise, name, and library selection to resume. The app adds selected members and uploads the chosen artwork. It does not remove members from a previous attempt.
-- TMDb's daily collection export, TheTVDB's public list directory, and ThePosterDB's public gallery are cached in memory. The first search after startup can take longer. TVDb and poster indexing depend on the upstream page formats and availability.
+- TMDb's daily collection export, TheTVDB's public list directory, and ThePosterDB's public gallery are cached in memory. If today's TMDb export isn't published yet, the app tries recent exports. The first search after startup can take longer. TVDb and poster indexing depend on the upstream page formats and availability.
 
 This app uses the [Silo v2 catalog API](https://github.com/Silo-Server/silo-server/blob/main/docs/catalog-api.md), [TMDb daily collection exports](https://developer.themoviedb.org/docs/daily-id-exports), and [TheTVDB official lists](https://www.thetvdb.com/lists). Poster cards credit their [ThePosterDB](https://theposterdb.com/) creators.
