@@ -48,12 +48,23 @@ export function eligibleCollection(libraryIds, members) {
   };
 }
 
-function imageType(buffer) {
+export function imageType(buffer) {
   if (buffer.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) return ['image/jpeg', 'jpg'];
   if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return ['image/png', 'png'];
   if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return ['image/webp', 'webp'];
-  throw new AppError(502, 'ThePosterDB returned a file that is not a supported image.');
+  throw new AppError(422, 'Artwork must be a JPEG, PNG, or WebP image.');
 }
+
+const excludedMovieLibraries = new Set([
+  'movies anime', 'movies ppv sports', 'movies foreign', 'movies 4k special editions', 'movies special editions',
+]);
+export function previewKind(library) {
+  if (library.type === 'series') return 'series';
+  if (library.type === 'movies' && !excludedMovieLibraries.has(normalize(library.name))) return 'movie';
+  return null;
+}
+
+const sortConfig = (sort) => sort === 'title' ? { field: 'title', order: 'asc' } : sort === 'source' ? {} : undefined;
 
 export function siloClient(base, token) {
   const root = new URL(base);
@@ -161,8 +172,8 @@ export function siloClient(base, token) {
     return form;
   }
 
-  async function updateCollection({ id, title, description, poster, etag, members = [], backdrop, customBackdrop = false }) {
-    const form = poster ? await prepareArtwork(poster.image, 'ThePosterDB artwork') : null;
+  async function updateCollection({ id, title, description, poster, etag, members = [], backdrop, customBackdrop = false, sort }) {
+    const form = poster ? await prepareArtwork(poster.image, 'Poster artwork', poster.custom) : null;
     const backdropForm = backdrop ? await prepareArtwork(backdrop, 'Backdrop', customBackdrop) : null;
     const current = await getCollection(id);
     if (!current.etag || current.etag !== etag) {
@@ -194,7 +205,7 @@ export function siloClient(base, token) {
       } while (cursor);
       additions = members.filter((item) => !existing.has(item.content_id));
     }
-    const updated = await call(path, { method: 'PATCH', etag, body: { title, description } });
+    const updated = await call(path, { method: 'PATCH', etag, body: { title, description, sort_config: sortConfig(sort) } });
     for (const item of additions) {
       try { await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position: position++ } }); }
       catch (error) { throw new AppError(error.status ?? 502, 'Collection details were saved, but adding titles was interrupted. Reopen the collection and retry.'); }
@@ -210,14 +221,14 @@ export function siloClient(base, token) {
     return members.length ? { ...updated, added: additions.length } : updated;
   }
   const active = new Set();
-  async function publish({ detail, title, libraryIds, members, poster, description, backdrop, customBackdrop = false, sync = false }) {
+  async function publish({ detail, title, libraryIds, members, poster, description, backdrop, customBackdrop = false, sync = false, sort }) {
     const identity = JSON.stringify([detail.provider, detail.id, normalize(title), [...libraryIds].sort(), ...(sync ? ['sync'] : [])]);
     const slug = 'franchise-' + createHash('sha256').update(identity).digest('hex').slice(0, 24);
     if (active.has(slug)) throw new AppError(409, 'This collection is already being imported.');
     active.add(slug);
     let collection;
     try {
-      const form = await prepareArtwork(poster.image, 'ThePosterDB artwork');
+      const form = await prepareArtwork(poster.image, 'Poster artwork', poster.custom);
       const customForm = customBackdrop ? await prepareArtwork(backdrop, 'Backdrop', true) : null;
       const existing = await collections();
       collection = existing.find((item) => item.slug === slug && normalize(item.title) === normalize(title));
@@ -229,7 +240,7 @@ export function siloClient(base, token) {
         const syncedSource = sync ? { collection_type: 'tmdb', source_url: `tmdb://collection/${detail.id}`,
           source_config: { mode: 'tmdb_collection', collection_id: Number(detail.id) }, sync_schedule: '0 4 * * *' } : null;
         collection = await call(collectionsPath, { method: 'POST', body: {
-          title, slug, library_ids: libraryIds, collection_type: 'manual', source_url: detail.url, description,
+          title, slug, library_ids: libraryIds, collection_type: 'manual', source_url: detail.url, description, sort_config: sortConfig(sort),
           ...syncedSource,
         } });
       }
