@@ -15,7 +15,9 @@ To run with Docker Compose from a shell, copy `.env.example` to `.env`, fill in 
 ## How imports work
 
 - **Movies** and **TV** open separate pages. Official lists that span both media types are filtered to movies or series before matching. The movie page also offers TMDb.
-- Opening a franchise loads its TMDb description and backdrop. For an official TheTVDB list, the app uses a related movie or show matched by an external ID and labels that title. Edit the description or turn off the backdrop before import if desired.
+- TV descriptions come from TheTVDB and remain editable. TV backdrops start blank. To add one, enter a direct public HTTPS image URL.
+- Movie descriptions and backdrops come from TMDb. Open **Browse movie backdrops** for images from the individual films. Movies listed on TheTVDB use a related TMDb film for the initial description and artwork.
+- **Keep collection synced with TMDb** is available for TMDb movie franchises. It creates a native Silo TMDb-backed collection with a daily sync. The first sync runs immediately. Silo must have its own TMDb integration configured. The two-title minimum still applies to each selected library when creating it.
 - Select multiple checkboxes and choose **Prepare selected** to check them against the selected libraries. A single exact poster match is suggested automatically. Open unfinished entries to choose artwork, then choose **Save to bulk queue**. **Import ready** runs only the ready entries and reports individual failures.
 - Use **In Silo** or an **In Silo · Edit** badge to change a collection's name, description, or artwork. For manual collections with a known franchise source, preview matches and select titles to append to the collection.
 
