@@ -14,6 +14,10 @@ To run with Docker Compose from a shell, copy `.env.example` to `.env`, fill in 
 
 ## How imports work
 
+- **Movies** and **TV** open separate pages. Official lists that span both media types are filtered to movies or series before matching. The movie page also offers TMDb.
+- Select multiple checkboxes and choose **Prepare selected** to check them against the selected libraries. A single exact poster match is suggested automatically. Open unfinished entries to choose artwork, then choose **Save to bulk queue**. **Import ready** runs only the ready entries and reports individual failures.
+- Use **In Silo** or an **In Silo · Edit** badge to change a collection's name, description, or artwork. Saving an edit keeps its existing membership and rules.
+
 - Select a franchise and the libraries to search. The preview matches existing library entries by TMDb, TheTVDB, or IMDb ID, then by unambiguous title and year when available. It shows unmatched titles and lets you deselect matched titles before importing.
 - The app downloads the public gallery artwork and uploads it to Silo as the collection poster. It uses the optimized JPEG served by the specified RedHeadJedi gallery. Browse all posters if your search terms differ from the gallery title.
 - An import creates a manual Silo server collection with only the titles you select. It does not download media, change existing media metadata, or schedule future collection updates.
