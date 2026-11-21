@@ -12,6 +12,9 @@ services:
       SILO_URL: "${SILO_URL:-https://thevault.box74.appboxmanager.xyz}"
       SILO_API_KEY: "${SILO_API_KEY:?Set SILO_API_KEY}"
       TMDB_READ_TOKEN: "${TMDB_READ_TOKEN:?Set TMDB_READ_TOKEN}"
+      POSTER_INDEX_DIR: /poster-data
+    volumes:
+      - poster-index:/poster-data
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -28,3 +31,6 @@ services:
 networks:
   proxy:
     external: true
+
+volumes:
+  poster-index:

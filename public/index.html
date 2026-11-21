@@ -37,6 +37,12 @@
           <p class="field-note">Sorts collections within each group in the chosen library.</p>
           <p id="order-status" role="status"></p>
         </div>
+        <details id="collection-health" hidden>
+          <summary>Collection health</summary>
+          <label class="check-line"><input id="health-artwork" type="checkbox"> Missing artwork only</label>
+          <p id="health-summary" role="status"></p>
+          <div id="health-rows"></div>
+        </details>
         <div id="franchises" class="franchises"></div>
         <button id="more-franchises" type="button" hidden>Load more franchises</button>
         <section class="batch" aria-labelledby="batch-title">
@@ -121,6 +127,11 @@
           <p id="poster-status" role="status"></p>
           <div id="posters" class="posters"></div>
           <button id="more-posters" type="button" hidden>Load more</button>
+          <section id="poster-comparison" hidden aria-labelledby="compare-title">
+            <h3 id="compare-title">Compare posters</h3>
+            <div id="compare-posters"></div>
+          </section>
+          <p id="compare-status" role="status"></p>
           <form id="custom-poster-form" class="custom-poster">
             <label class="field">Custom poster URL<input id="custom-poster-url" type="url" maxlength="2048" placeholder="https://…"></label>
             <button id="custom-poster-preview" type="submit">Preview and use URL</button>

@@ -3,6 +3,21 @@ import test from 'node:test';
 import { allowedFranchiseTitle, galleryUrl, parseGallery, parseTVIndex, parseTVMembers, providers } from './providers.mjs';
 import { eligibleCollection, matchMembers, previewKind, siloClient } from './silo.mjs';
 import { publicArtworkUrl } from './remote-artwork.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { posterCache } from './poster-cache.mjs';
+
+test('poster snapshots survive an app restart without another upstream request', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'poster-index-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const items = [{ id: '42', title: 'A collection', creator: 'XDM' }];
+  const first = await posterCache(['XDM'], async () => items, directory);
+  await first.refresh();
+  const restarted = await posterCache(['XDM'], () => assert.fail('Fresh snapshot should be reused'), directory);
+  assert.deepEqual(restarted.get('XDM'), items);
+  await restarted.refresh();
+});
 
 test('extracts official lists, franchise members and attributed gallery cards', () => {
   assert.equal(parseTVIndex('<h3><a href="/lists/power">Power Franchise</a></h3>')[0].id, 'power');

@@ -172,6 +172,23 @@ export function siloClient(base, token) {
   const collections = async () => (await call(collectionsPath)).items;
   const collectionPath = (id) => `${collectionsPath}/${encodeURIComponent(id)}`;
   const getCollection = (id) => call(collectionPath(id), { withTag: true });
+  async function collectionMemberIds(id) {
+    const members = new Set();
+    const cursors = new Set();
+    let cursor;
+    do {
+      const query = new URLSearchParams({ limit: '200' });
+      if (cursor) query.set('cursor', cursor);
+      const result = await call(collectionPath(id) + '/items?' + query);
+      for (const item of result.items) members.add(item.media_item_id);
+      cursor = result.page?.has_more ? result.page.next_cursor : null;
+      if (result.page?.has_more && (!cursor || cursors.has(cursor))) {
+        throw new AppError(502, 'Silo returned an invalid collection cursor.');
+      }
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    return members;
+  }
   async function sortCollections(libraryId) {
     const query = new URLSearchParams({ library_id: libraryId });
     const scoped = (await call(collectionsPath + '?' + query)).items;
@@ -323,5 +340,5 @@ export function siloClient(base, token) {
       active.delete(slug);
     }
   }
-  return { libraries, catalog, publish, planImport, collections, getCollection, updateCollection, sortCollections };
+  return { libraries, catalog, publish, planImport, collections, getCollection, collectionMemberIds, updateCollection, sortCollections };
 }

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { allowedFranchiseTitle, AppError, galleryUrl, normalize, posterSources, providers } from './providers.mjs';
 import { eligibleCollection, imageType, matchMembers, previewKind, siloClient } from './silo.mjs';
 import { downloadPublicArtwork, publicArtworkUrl } from './remote-artwork.mjs';
+import { posterCache } from './poster-cache.mjs';
 
 const env = process.env;
 if (!env.APP_PASSWORD || env.APP_PASSWORD.length < 16) throw new Error('Set APP_PASSWORD to at least 16 characters.');
@@ -11,6 +12,9 @@ const username = env.APP_USER || 'admin';
 const digest = (value) => createHash('sha256').update(value).digest();
 const auth = digest(`${username}:${env.APP_PASSWORD}`);
 const source = providers(env.TMDB_READ_TOKEN);
+const posterIndex = await posterCache(posterSources, source.posterIndex, env.POSTER_INDEX_DIR);
+void posterIndex.refresh();
+setInterval(() => void posterIndex.refresh(), 30 * 60 * 1000).unref();
 const silo = siloClient(env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz', env.SILO_API_KEY);
 const publicCollection = (item) => ({
   id: item.id, title: item.title, description: item.description ?? '', sourceUrl: item.source_url,
@@ -18,6 +22,9 @@ const publicCollection = (item) => ({
   count: item.item_count, kind: item.collection_type,
   titleSort: item.sort_config?.field === 'title' && item.sort_config?.order === 'asc',
   browseable: allowedFranchiseTitle(item.title),
+  hasPoster: Boolean(item.poster_url && !item.poster_is_collage),
+  hasBackdrop: Boolean(item.backdrop_url),
+  syncStatus: item.last_sync_status,
 });
 const assets = new Map(await Promise.all([
   ['/', 'index.html', 'text/html'], ['/movies', 'index.html', 'text/html'], ['/tv', 'index.html', 'text/html'], ['/style.css', 'style.css', 'text/css'], ['/app.js', 'app.js', 'text/javascript'],
@@ -124,7 +131,9 @@ async function selectedPoster(data, required = false) {
   }
   if (data.posterId != null) {
     if (typeof data.posterId !== 'string' || !/^\d{1,15}$/.test(data.posterId)) throw new AppError(400, 'Invalid poster.');
-    const poster = await source.posterById(data.posterId, data.posterCreator);
+    if (!posterSources.includes(data.posterCreator)) throw new AppError(400, 'Choose a configured poster source.');
+    const poster = posterIndex.get(data.posterCreator)?.find((item) => item.id === data.posterId)
+      ?? await source.posterById(data.posterId, data.posterCreator);
     if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
     return poster;
   }
@@ -199,6 +208,28 @@ createServer(async (req, res) => {
         const { value, etag } = await silo.getCollection(collectionId(input.get('id')));
         return send(res, 200, { ...publicCollection(value), etag });
       }
+      if (path === '/api/collection-health') {
+        const id = collectionId(input.get('id'));
+        const kind = input.get('kind');
+        const { value } = await silo.getCollection(id);
+        const collection = publicCollection(value);
+        const sourceUrl = collection.sourceUrl ?? '';
+        const movie = sourceUrl.match(/^(?:tmdb:\/\/collection\/|https:\/\/(?:www\.)?themoviedb\.org\/collection\/)(\d+)(?:-[\w-]+)?\/?$/);
+        const tvdb = sourceUrl.match(/^https:\/\/(?:www\.)?thetvdb\.com\/lists\/([a-z0-9-]+)\/?$/);
+        const libraryIds = (await silo.libraries()).filter((lib) =>
+          collection.libraryIds.includes(lib.id) && previewKind(lib) === kind).map((lib) => lib.id);
+        if (collection.kind !== 'manual' || (!movie && !tvdb) || (movie && kind !== 'movie') || !libraryIds.length) {
+          return send(res, 200, { checked: false, reason: 'Membership check requires a manual collection with a linked franchise and an eligible library.' });
+        }
+        const { matches } = await preview({ kind, libraryIds, provider: movie ? 'tmdb' : 'tvdb', id: (movie ?? tvdb)[1] });
+        const members = await silo.collectionMemberIds(id);
+        const title = (item) => item.title + (item.year ? ' (' + item.year + ')' : '');
+        return send(res, 200, { checked: true,
+          missing: matches.filter((item) => !item.match && item.basis === 'Missing').map(title),
+          ambiguous: matches.filter((item) => !item.match && item.basis !== 'Missing').map(title),
+          available: matches.filter((item) => item.match && !members.has(item.match.content_id)).map(title),
+        });
+      }
       if (path === '/api/franchises') {
         const query = (input.get('q') ?? '').slice(0, 150);
         const provider = input.get('provider');
@@ -225,6 +256,13 @@ createServer(async (req, res) => {
         const creator = input.get('creator') || 'all';
         if (creator !== 'all' && !posterSources.includes(creator)) throw new AppError(400, 'Choose a configured poster source.');
         const creators = creator === 'all' ? posterSources : [creator];
+        const indexed = creators.map((name) => posterIndex.get(name));
+        if (input.get('mode') !== 'live' && indexed.every(Boolean)) {
+          const items = [...new Map(indexed.flat().map((item) => [item.id, item])).values()];
+          res.setHeader('Cache-Control', 'private, max-age=120');
+          return send(res, 200, { ...filter(items, query, number, 24), mode: 'index',
+            gallery: creator === 'all' ? null : galleryUrl(creator) });
+        }
         const full = input.get('full') === '1';
         const results = await Promise.allSettled(creators.map(async (name) =>
           query && full ? { items: await source.posterIndex(name) } : source.galleryPage(name, number)));
@@ -236,7 +274,7 @@ createServer(async (req, res) => {
         if (!full) result.more = more;
         const unavailable = creators.filter((_, index) => results[index].status === 'rejected');
         if (!unavailable.length) res.setHeader('Cache-Control', 'private, max-age=120');
-        return send(res, 200, { ...result, unavailable, gallery: creator === 'all' ? null : galleryUrl(creator) });
+        return send(res, 200, { ...result, unavailable, mode: 'live', gallery: creator === 'all' ? null : galleryUrl(creator) });
       }
     }
     if (req.method === 'POST' && path === '/api/preview') {

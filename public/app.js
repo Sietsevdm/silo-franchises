@@ -138,11 +138,55 @@ async function listFranchises(reset) {
 async function refreshExisting() {
   try { state.existing = await api('collections'); state.existingError = ''; }
   catch (error) { state.existingError = error.message; }
+  drawCollectionHealth();
   if (state.provider === 'silo') await listFranchises(true);
   else drawRows();
 }
 
+function drawCollectionHealth() {
+  if (!el('collection-health').open) return;
+  const collections = state.existing.filter(isCurrentKind).sort((a, b) => sortedTitles.compare(a.title, b.title));
+  const missing = collections.filter((item) => !item.hasPoster || !item.hasBackdrop);
+  status('health-summary', state.existingError || (missing.length + ' of ' + collections.length + ' collections are missing artwork.'));
+  const rows = el('health-artwork').checked ? missing : collections;
+  el('health-rows').replaceChildren(...rows.map((item) => {
+    const row = create('article');
+    const artwork = [!item.hasPoster && 'No custom poster', !item.hasBackdrop && 'No backdrop',
+      ['failed', 'error'].includes(item.syncStatus) && 'Sync failed'].filter(Boolean);
+    const result = create('div');
+    const button = action('Check titles', async () => {
+      button.disabled = true;
+      result.textContent = 'Checking linked franchise…';
+      try {
+        const value = await api('collection-health?' + params({ id: item.id, kind }));
+        if (!value.checked) { result.textContent = value.reason; return; }
+        result.replaceChildren();
+        for (const [label, entries] of [
+          ['Missing from eligible libraries', value.missing], ['Needs a manual match', value.ambiguous],
+          ['Available to add', value.available],
+        ]) {
+          if (!entries.length) continue;
+          const list = create('ul');
+          for (const title of entries) list.append(create('li', title));
+          const details = create('details');
+          details.append(create('summary', label + ' (' + entries.length + ')'), list);
+          result.append(details);
+        }
+        if (!result.childElementCount) result.textContent = 'All linked titles are in this collection.';
+      } catch (error) { result.textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+    row.append(action(item.title, () => openExisting(item), 'row-title'),
+      create('p', artwork.join(' · ') || 'Artwork complete'), button, result);
+    return row;
+  }));
+}
+el('collection-health').ontoggle = drawCollectionHealth;
+el('health-artwork').onchange = drawCollectionHealth;
+
 function openPanel(title, editing) {
+  state.comparison = new Map();
+  drawPosterComparison();
   el('selection-empty').hidden = true;
   el('selection').hidden = false;
   el('poster-tools').hidden = false;
@@ -560,6 +604,21 @@ el('preview').onclick = async () => {
 function posterImage(poster) {
   return Object.assign(create('img'), { src: poster.image, alt: poster.title, loading: 'lazy', decoding: 'async' });
 }
+function drawPosterComparison() {
+  const posters = [...state.comparison.values()];
+  el('poster-comparison').hidden = posters.length === 0;
+  status('compare-status', posters.length ? posters.length + ' of 3 posters shortlisted.' : '');
+  el('compare-posters').replaceChildren(...posters.map((poster) => {
+    const card = create('figure');
+    card.append(posterImage(poster), create('figcaption', poster.title + ' · ' + poster.creator),
+      action('Use poster', () => showPoster(poster)),
+      action('Remove', () => {
+        state.comparison.delete(poster.id);
+        drawPosterComparison();
+      }));
+    return card;
+  }));
+}
 function showPoster(poster) {
   if (!poster?.customUrl) {
     state.customPosterRun = null;
@@ -569,7 +628,7 @@ function showPoster(poster) {
   state.poster = poster;
   el('chosen-poster').replaceChildren(...(poster ? [Object.assign(posterImage(poster), { loading: 'eager', fetchPriority: 'high' })] : []));
   status('poster-label', poster ? `${poster.title} · ${poster.creator}` : (state.editing ? 'Keeping current artwork' : 'No poster selected'));
-  for (const element of el('posters').querySelectorAll('button')) element.setAttribute('aria-pressed', String(element.dataset.id === poster?.id));
+  for (const element of el('posters').querySelectorAll('button[data-id]')) element.setAttribute('aria-pressed', String(element.dataset.id === poster?.id));
   updateActions();
 }
 
@@ -602,6 +661,7 @@ async function listPosters(reset) {
   el('more-posters').hidden = true;
   if (reset) {
     state.posterPage = 1;
+    state.posterMode = '';
     state.posterSeen = new Set();
     state.posterQuery = el('poster-query').value.trim();
     state.posterCreator = el('poster-source').value;
@@ -612,8 +672,9 @@ async function listPosters(reset) {
   try {
     let result;
     for (let attempt = 0; attempt < 3; attempt++) {
-      result = await api('posters?' + params({ q: state.posterQuery, page: state.posterPage, creator: state.posterCreator }));
+      result = await api('posters?' + params({ q: state.posterQuery, page: state.posterPage, creator: state.posterCreator, mode: state.posterMode }));
       if (state.posterRun !== run) return;
+      state.posterMode = result.mode;
       if (result.items.length || !result.more || !state.posterQuery || attempt === 2) break;
       state.posterPage++;
     }
@@ -629,7 +690,17 @@ async function listPosters(reset) {
       button.dataset.id = poster.id;
       button.setAttribute('aria-pressed', String(state.poster?.id === poster.id));
       button.append(posterImage(poster), create('span', poster.title), create('small', poster.creator));
-      el('posters').append(button);
+      const card = create('div');
+      card.className = 'poster-card';
+      const compare = action('Compare', () => {
+        if (state.comparison.has(poster.id)) return;
+        if (state.comparison.size >= 3) return status('compare-status', 'Remove a poster to compare another.');
+        state.comparison.set(poster.id, poster);
+        drawPosterComparison();
+      });
+      compare.setAttribute('aria-label', 'Compare ' + poster.title + ' by ' + poster.creator);
+      card.append(button, compare);
+      el('posters').append(card);
     }
     el('more-posters').hidden = !result.more;
     const unavailable = result.unavailable?.length ? `Could not load: ${result.unavailable.join(', ')}.` : '';
@@ -957,6 +1028,8 @@ function updateSortOptions() {
   if (!available && el('franchise-sort').value === 'popular') el('franchise-sort').value = 'default';
   el('hide-existing-field').hidden = state.provider === 'silo';
   el('silo-order').hidden = state.provider !== 'silo';
+  el('collection-health').hidden = state.provider !== 'silo';
+  if (state.provider === 'silo') drawCollectionHealth();
 }
 updateSortOptions();
 el(kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
