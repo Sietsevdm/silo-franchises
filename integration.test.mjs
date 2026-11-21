@@ -104,11 +104,31 @@ test('catalog previews retry rate limits and share a media-filtered per-library 
     });
   });
   const silo = siloClient('https://example.test/', 'fake-silo-key');
-  const expected = [{ content_id: 'first', type: 'series' }, { content_id: 'second', type: 'series' }];
+  const expected = [{ content_id: 'first', type: 'series' }, { content_id: 'second', type: 'series' }]
+    .map((item) => ({ ...item, previewLibraryIds: ['1'] }));
   const results = await Promise.all([silo.catalog(['1'], 'series'), silo.catalog(['1'], 'series')]);
   assert.deepEqual(results, [expected, expected]);
   assert.deepEqual(await silo.catalog(['1'], 'series'), expected);
   assert.deepEqual(calls, [null, 'next', 'next']);
+});
+
+test('preview attribution shows both libraries for shared items and flags distinct matching copies', async (t) => {
+  const item = (id, providerId) => ({ content_id: id, type: 'series', title: id, tvdb_id: providerId });
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const library = new URL(url).searchParams.get('library_id');
+    return Response.json({ items: [item('shared', '10'), item(`copy-${library}`, '20'),
+      ...(library === 'standard' ? [item('standard-only', '30')] : [])] });
+  });
+  const silo = siloClient('https://example.test/', 'fake-silo-key');
+  const catalog = await silo.catalog(['standard', '4k'], 'series');
+  const results = matchMembers(['10', '20', '30', '40'].map((tvdb) => ({ tvdb, title: tvdb, type: 'series' })), catalog);
+  assert.deepEqual(results.map((result) => result.libraryIds ?? []), [
+    ['standard', '4k'], ['standard', '4k'], ['standard'], [],
+  ]);
+  assert.equal(results[0].match.content_id, 'shared');
+  assert.equal(results[1].basis, 'Ambiguous provider IDs');
+  assert.equal(results[1].match, undefined);
+  assert.equal(results[3].basis, 'Missing');
 });
 
 test('poster selections stay bound to their allowlisted creator', async (t) => {
