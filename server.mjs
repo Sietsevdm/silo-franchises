@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { allowedFranchiseTitle, AppError, galleryUrl, normalize, posterSources, providers } from './providers.mjs';
-import { eligibleCollection, imageType, matchMembers, previewKind, siloClient } from './silo.mjs';
+import { eligibleCollection, imageType, libraryKind, matchMembers, previewKind, selectedLibraryKind, siloClient } from './silo.mjs';
 import { downloadPublicArtwork, publicArtworkUrl } from './remote-artwork.mjs';
 import { posterCache } from './poster-cache.mjs';
 import { appState } from './app-state.mjs';
@@ -171,9 +171,10 @@ async function preview(data) {
   if (!libraryIds.length || libraryIds.length > 20 || libraryIds.some((id) => typeof id !== 'string' || !id || id.length > 100)) {
     throw new AppError(400, 'Select one or more Silo libraries.');
   }
-  const libraries = await silo.libraries();
-  if (libraryIds.some((id) => !libraries.some((library) => library.id === id && previewKind(library) === data.kind))) {
-    throw new AppError(400, 'A selected Silo library is unavailable for this media type.');
+  const [libraries, settings] = await Promise.all([silo.libraries(), state.get('settings', 'libraries')]);
+  if (libraryIds.some((id) => !libraries.some((library) => library.id === id &&
+    selectedLibraryKind(library, settings?.libraryIds) === data.kind))) {
+    throw new AppError(400, 'A selected library is unavailable for this media type. Check library visibility in Settings and preview again.');
   }
   const [detail, catalog] = await Promise.all([source.details(id), silo.catalog(libraryIds, data.kind)]);
   const libraryNames = new Map(libraries.map(({ id, name }) => [id, name]));
@@ -279,7 +280,8 @@ createServer(async (req, res) => {
         return send(res, 200, asset.body, asset.mime);
       }
       if (path === '/api/libraries') return send(res, 200, (await silo.libraries())
-        .map((library) => ({ id: library.id, name: library.name, type: library.type, previewKind: previewKind(library) })));
+        .map((library) => ({ id: library.id, name: library.name, type: library.type,
+          mediaKind: libraryKind(library), previewKind: previewKind(library) })));
       if (path === '/api/settings') return send(res, 200, await state.get('settings', 'libraries') ?? { libraryIds: null });
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
       if (path === '/api/drafts') return send(res, 200, await state.get('drafts', queueKind(input.get('kind'))) ?? { revision: 0 });
@@ -303,8 +305,9 @@ createServer(async (req, res) => {
         const sourceUrl = collection.sourceUrl ?? '';
         const movie = sourceUrl.match(/^(?:tmdb:\/\/collection\/|https:\/\/(?:www\.)?themoviedb\.org\/collection\/)(\d+)(?:-[\w-]+)?\/?$/);
         const tvdb = sourceUrl.match(/^https:\/\/(?:www\.)?thetvdb\.com\/lists\/([a-z0-9-]+)\/?$/);
-        const libraryIds = (await silo.libraries()).filter((lib) =>
-          collection.libraryIds.includes(lib.id) && previewKind(lib) === kind).map((lib) => lib.id);
+        const [libraries, settings] = await Promise.all([silo.libraries(), state.get('settings', 'libraries')]);
+        const libraryIds = libraries.filter((lib) =>
+          collection.libraryIds.includes(lib.id) && selectedLibraryKind(lib, settings?.libraryIds) === kind).map((lib) => lib.id);
         if (collection.kind !== 'manual' || (!movie && !tvdb) || (movie && kind !== 'movie') || !libraryIds.length) {
           return send(res, 200, { ...requestInfo, checked: false, reason: 'Membership check requires a manual collection with a linked franchise and an eligible library.' });
         }
@@ -398,7 +401,7 @@ createServer(async (req, res) => {
       if (!Array.isArray(libraryIds) || libraryIds.some((id) => typeof id !== 'string')) {
         throw new AppError(400, 'Choose valid library IDs.');
       }
-      const libraries = (await silo.libraries()).filter((library) => previewKind(library));
+      const libraries = (await silo.libraries()).filter((library) => libraryKind(library));
       const available = new Set(libraries.map(({ id }) => id));
       const selected = [...new Set(libraryIds)];
       if (selected.some((id) => !available.has(id))) throw new AppError(409, 'The library list changed. Refresh Settings and try again.');
@@ -471,7 +474,8 @@ createServer(async (req, res) => {
     }
     if (req.method === 'POST' && path === '/api/sort-collections') {
       const data = await body(req);
-      const library = (await silo.libraries()).find((item) => item.id === data.libraryId && previewKind(item) === data.kind);
+      const [libraries, settings] = await Promise.all([silo.libraries(), state.get('settings', 'libraries')]);
+      const library = libraries.find((item) => item.id === data.libraryId && selectedLibraryKind(item, settings?.libraryIds) === data.kind);
       if (!library) throw new AppError(400, 'Choose an eligible Silo library.');
       return send(res, 200, await silo.sortCollections(library.id));
     }

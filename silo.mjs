@@ -58,10 +58,17 @@ export function imageType(buffer) {
 const excludedMovieLibraries = new Set([
   'movies anime', 'movies ppv sports', 'movies foreign', 'movies 4k special editions', 'movies special editions',
 ]);
-export function previewKind(library) {
+export function libraryKind(library) {
   if (library.type === 'series') return 'series';
-  if (library.type === 'movies' && !excludedMovieLibraries.has(normalize(library.name))) return 'movie';
+  if (library.type === 'movies') return 'movie';
   return null;
+}
+export function previewKind(library) {
+  const kind = libraryKind(library);
+  return kind === 'movie' && excludedMovieLibraries.has(normalize(library.name)) ? null : kind;
+}
+export function selectedLibraryKind(library, libraryIds) {
+  return libraryIds == null ? previewKind(library) : libraryIds.includes(library.id) ? libraryKind(library) : null;
 }
 
 const sortConfig = (sort) => sort === 'title' ? { field: 'title', order: 'asc' } : sort === 'source' ? {} : undefined;

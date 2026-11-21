@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { allowedFranchiseTitle, galleryUrl, parseGallery, parseTVIndex, parseTVListTitles, parseTVMembers, providers } from './providers.mjs';
-import { eligibleCollection, matchMembers, previewKind, siloClient } from './silo.mjs';
+import { eligibleCollection, libraryKind, matchMembers, previewKind, selectedLibraryKind, siloClient } from './silo.mjs';
 import { publicArtworkUrl } from './remote-artwork.mjs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -459,6 +459,17 @@ test('browsing excludes configured writing systems and preview limits libraries 
     assert.equal(previewKind({ type: 'movies', name }), null);
   }
   assert.equal(previewKind({ type: 'mixed', name: 'Mixed' }), null);
+});
+
+test('library settings can opt into all movie and TV libraries without changing the defaults', () => {
+  const foreign = { id: 'foreign', type: 'movies', name: 'Movies - Foreign' };
+  const tv = { id: 'tv', type: 'series', name: 'TV Shows' };
+  assert.equal(libraryKind(foreign), 'movie');
+  assert.equal(selectedLibraryKind(foreign, null), null);
+  assert.equal(selectedLibraryKind(foreign, ['foreign']), 'movie');
+  assert.equal(selectedLibraryKind(tv, ['foreign']), null);
+  assert.equal(selectedLibraryKind(tv, []), null);
+  assert.equal(selectedLibraryKind({ id: 'mixed', type: 'mixed' }, ['mixed']), null);
 });
 
 test('saving A–Z writes Silo’s collection default sort configuration', async (t) => {

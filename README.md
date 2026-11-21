@@ -4,12 +4,28 @@ A free, self-hosted companion to Silo for building and maintaining movie and TV 
 
 ## Features
 
-- Browse TMDb movie collections and official TheTVDB lists in a page-numbered editor. Filter by English or Dutch titles, hide franchises, and choose which Silo libraries appear.
+- Browse TMDb movie collections and official TheTVDB lists in a page-numbered editor. Filter by English or Dutch titles, hide franchises, and choose from all enabled movie and TV libraries in Settings.
 - Preview matches across selected libraries, fix ambiguous matches, and save library presets. New collections require at least two distinct titles in an eligible library.
 - Browse and compare English-language artwork from ThePosterDB, paste a custom poster URL, or select movie backdrops from TMDb.
 - Create and edit manual collections, or create TMDb-synced movie collections. Sort collection cards A–Z in Silo and undo recent metadata or artwork edits.
 - Prepare, preview, and apply bulk changes on dedicated movie and TV queue pages. Drafts save to the server and can be resumed from another device.
 - Review collection health, request missing titles through Silo Requests, and optionally add them to manual collections once they reach a selected library.
+
+## Screenshots
+
+The screenshots use fictional collections, libraries, and artwork.
+
+### Collection editor
+
+![Movie franchise editor with collection details, a backdrop, and poster choices](docs/screenshots/editor.jpg)
+
+### Bulk queue
+
+![Movie bulk queue showing library choices and the status of four queued franchises](docs/screenshots/bulk-queue.jpg)
+
+### Library settings
+
+![Library settings with separate checkboxes for movie and TV libraries](docs/screenshots/settings.jpg)
 
 ## Quick start
 

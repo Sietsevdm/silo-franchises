@@ -643,10 +643,10 @@ async function loadLibraries() {
     state.libraryPreference = preferences.libraryIds;
     if (settingsPage) {
       for (const [type, target] of [['movie', 'settings-movies'], ['series', 'settings-tv']]) {
-        const group = libraries.filter((lib) => lib.previewKind === type);
+        const group = libraries.filter((lib) => lib.mediaKind === type);
         for (const lib of group) {
           const label = create('label');
-          label.append(inputCheck(lib.id, !preferences.libraryIds || preferences.libraryIds.includes(lib.id)),
+          label.append(inputCheck(lib.id, preferences.libraryIds ? preferences.libraryIds.includes(lib.id) : lib.previewKind === type),
             document.createTextNode(lib.name));
           el(target).append(label);
         }
@@ -655,8 +655,9 @@ async function loadLibraries() {
       el('save-settings').disabled = false;
       return;
     }
-    const eligible = libraries.filter((lib) => lib.previewKind === kind &&
-      (!preferences.libraryIds || preferences.libraryIds.includes(lib.id)));
+    const eligible = libraries.filter((lib) => preferences.libraryIds
+      ? lib.mediaKind === kind && preferences.libraryIds.includes(lib.id)
+      : lib.previewKind === kind);
     if (bulkPage) {
       const previous = stored('silo-bulk-libraries-' + kind, []);
       for (const lib of eligible) {
