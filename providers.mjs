@@ -7,6 +7,8 @@ export function galleryUrl(creator) {
 }
 const tvdb = 'https://thetvdb.com';
 const tmdb = 'https://api.themoviedb.org/3';
+const tmdbArtwork = (path) => typeof path === 'string' && /^\/[a-zA-Z0-9_-]+\.(?:jpg|png|webp)$/i.test(path)
+  ? 'https://image.tmdb.org/t/p/w1280' + path : '';
 const ttl = 6 * 60 * 60 * 1000;
 const maxBytes = 15 * 1024 * 1024;
 
@@ -107,6 +109,19 @@ async function walk(first, last, load) {
 }
 
 export function providers(token) {
+  const tmdbJson = async (path) => {
+    if (!token) throw new AppError(503, 'Set TMDB_READ_TOKEN in Portainer to load TMDb details.');
+    try {
+      return await (await request(tmdb + path, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      }, 'TMDb API')).json();
+    } catch (error) {
+      if ([401, 403].includes(error.status)) {
+        throw new AppError(error.status, 'TMDb rejected the API credential. Check that TMDB_READ_TOKEN contains the API Read Access Token from your TMDb account.');
+      }
+      throw error;
+    }
+  };
   const seenPosters = new Map();
   const tvIndex = cached(async () => {
     const first = await html(`${tvdb}/lists`, 'TheTVDB');
@@ -122,18 +137,19 @@ export function providers(token) {
   });
   const movieIndex = cached(async () => {
     const now = new Date();
-    for (let day = 0; day < 3; day++) {
+    for (let day = 0; day < 4; day++) {
       const date = new Date(now.getTime() - day * 86_400_000).toISOString().slice(0, 10);
       const [year, month, dateOfMonth] = date.split('-');
       try {
-        const buffer = await bytes(await request(`https://files.tmdb.org/p/exports/collection_ids_${month}_${dateOfMonth}_${year}.json.gz`, {}, 'TMDb'));
+        const buffer = await bytes(await request(`https://files.tmdb.org/p/exports/collection_ids_${month}_${dateOfMonth}_${year}.json.gz`, {}, 'TMDb collection index'));
         const raw = buffer[0] === 31 && buffer[1] === 139 ? gunzipSync(buffer, { maxOutputLength: maxBytes }) : buffer;
         return raw.toString('utf8').trim().split('\n').map((line) => {
           const { id, name } = JSON.parse(line);
           return { id: String(id), title: name, provider: 'tmdb', url: `https://www.themoviedb.org/collection/${id}` };
         });
       } catch (error) {
-        if (error.status !== 404 || day === 2) throw error;
+        if (![403, 404].includes(error.status)) throw error;
+        if (day === 3) throw new AppError(502, 'TMDb’s recent public collection indexes are unavailable. Try again later or browse TheTVDB.');
       }
     }
   });
@@ -190,12 +206,11 @@ export function providers(token) {
   const details = cached(async (key) => {
     const [provider, id, kind] = key.split(':');
     if (provider === 'tmdb') {
-      if (!token) throw new AppError(503, 'Set TMDB_READ_TOKEN in the stack to load movie collection members.');
-      const response = await request(`${tmdb}/collection/${id}?language=en-US`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      }, 'TMDb');
-      const item = await response.json();
-      return { provider, id, title: item.name, description: item.overview, url: `https://www.themoviedb.org/collection/${id}`,
+      const item = await tmdbJson(`/collection/${id}?language=en-US`);
+      const url = `https://www.themoviedb.org/collection/${id}`;
+      return { provider, id, title: item.name, url, metadata: {
+        title: item.name, description: item.overview ?? '', backdrop: tmdbArtwork(item.backdrop_path), url, kind: 'collection',
+      },
         members: item.parts.map((part) => ({ type: 'movie', title: part.title, tmdb: String(part.id), year: part.release_date?.slice(0, 4) })) };
     }
     const list = await tvList(id);
@@ -208,11 +223,39 @@ export function providers(token) {
     }
     return { provider, id, title: list.title, url: list.url, members };
   });
+  const metadata = cached(async (key) => {
+    const [provider, id, kind] = key.split(':');
+    if (provider === 'tmdb') return (await details(key)).metadata;
+    const list = await tvList(id);
+    const candidates = list.items.filter((item) => item.type === kind).slice(0, 4);
+    const route = kind === 'movie' ? 'movie' : 'tv';
+    for (const candidate of candidates) {
+      const refs = await tvMember(`${candidate.section}/${candidate.slug}`);
+      try {
+        let item;
+        if (refs.tmdb) item = await tmdbJson(`/${route}/${refs.tmdb}?language=en-US`);
+        else if (refs.imdb || refs.tvdb) {
+          const id = refs.imdb || refs.tvdb;
+          const external = refs.imdb ? 'imdb_id' : 'tvdb_id';
+          const result = await tmdbJson(`/find/${id}?external_source=${external}&language=en-US`);
+          const hits = kind === 'movie' ? result.movie_results : result.tv_results;
+          if (hits?.length === 1) item = hits[0];
+        }
+        if (item && (item.overview || tmdbArtwork(item.backdrop_path))) {
+          return { title: item.title ?? item.name, description: item.overview ?? '', backdrop: tmdbArtwork(item.backdrop_path),
+            url: `https://www.themoviedb.org/${route}/${item.id}`, kind: 'related' };
+        }
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+    }
+    return null;
+  });
   const posterById = async (id, creator) => {
     if (!posterSources.includes(creator)) throw new AppError(400, 'Choose a configured poster source.');
     const seen = seenPosters.get(id);
     if (seen?.creator === creator) return seen;
     return (await posterIndex(creator)).find((poster) => poster.id === id);
   };
-  return { tvIndex, tvList, movieIndex, posterIndex, galleryPage, details, posterById };
+  return { tvIndex, tvList, movieIndex, posterIndex, galleryPage, details, metadata, posterById };
 }
