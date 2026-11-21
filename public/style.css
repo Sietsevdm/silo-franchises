@@ -122,6 +122,10 @@ fieldset { border: 1px solid var(--line); border-radius: .65rem; margin: 1rem 0;
 legend { color: var(--muted); padding: 0 .3rem; }
 fieldset label, .match { display: flex; align-items: start; gap: .5rem; padding: .4rem 0; }
 .match { border-bottom: 1px solid var(--line); }
+.match input[type=checkbox] { margin-top: .18rem; }
+.match-details { min-width: 0; display: grid; gap: .35rem; overflow-wrap: anywhere; }
+.match-libraries { display: flex; flex-wrap: wrap; gap: .3rem; }
+.match-libraries > span { padding: .15rem .5rem; border: 1px solid #405076; border-radius: .45rem; background: #202d48; color: #dce5ff; font-size: .8rem; }
 .match small { margin-left: auto; text-align: right; color: var(--muted); }
 .match.missing { color: var(--muted); }
 .publish { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--line); }
