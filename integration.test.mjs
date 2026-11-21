@@ -88,3 +88,25 @@ test('editing uses the selected collection and rejects stale data before patchin
   assert.deepEqual(await silo.updateCollection({ ...input, etag: '"v2"' }), { id: '42', title: 'New' });
   assert.equal(writes, 1);
 });
+
+test('catalog previews retry rate limits and share a media-filtered per-library cache', async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const request = new URL(url);
+    assert.equal(request.pathname, '/api/v2/admin/catalog/items');
+    assert.equal(request.searchParams.get('type'), 'series');
+    const cursor = request.searchParams.get('cursor');
+    calls.push(cursor);
+    if (calls.length === 2) return new Response(null, { status: 429, headers: { 'Retry-After': '0' } });
+    return Response.json({
+      items: [{ content_id: cursor ? 'second' : 'first', type: 'series' }],
+      page: cursor ? { has_more: false } : { has_more: true, next_cursor: 'next' },
+    });
+  });
+  const silo = siloClient('https://example.test/', 'fake-silo-key');
+  const expected = [{ content_id: 'first', type: 'series' }, { content_id: 'second', type: 'series' }];
+  const results = await Promise.all([silo.catalog(['1'], 'series'), silo.catalog(['1'], 'series')]);
+  assert.deepEqual(results, [expected, expected]);
+  assert.deepEqual(await silo.catalog(['1'], 'series'), expected);
+  assert.deepEqual(calls, [null, 'next', 'next']);
+});
