@@ -1,9 +1,9 @@
 import { createServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { AppError, galleryUrl, normalize, posterSources, providers } from './providers.mjs';
-import { eligibleCollection, matchMembers, siloClient } from './silo.mjs';
-import { publicArtworkUrl } from './remote-artwork.mjs';
+import { allowedFranchiseTitle, AppError, galleryUrl, normalize, posterSources, providers } from './providers.mjs';
+import { eligibleCollection, imageType, matchMembers, previewKind, siloClient } from './silo.mjs';
+import { downloadPublicArtwork, publicArtworkUrl } from './remote-artwork.mjs';
 
 const env = process.env;
 if (!env.APP_PASSWORD || env.APP_PASSWORD.length < 16) throw new Error('Set APP_PASSWORD to at least 16 characters.');
@@ -16,6 +16,8 @@ const publicCollection = (item) => ({
   id: item.id, title: item.title, description: item.description ?? '', sourceUrl: item.source_url,
   libraryIds: item.library_ids?.length ? item.library_ids : [item.library_id].filter(Boolean),
   count: item.item_count, kind: item.collection_type,
+  titleSort: item.sort_config?.field === 'title' && item.sort_config?.order === 'asc',
+  browseable: allowedFranchiseTitle(item.title),
 });
 const assets = new Map(await Promise.all([
   ['/', 'index.html', 'text/html'], ['/movies', 'index.html', 'text/html'], ['/tv', 'index.html', 'text/html'], ['/style.css', 'style.css', 'text/css'], ['/app.js', 'app.js', 'text/javascript'],
@@ -89,12 +91,30 @@ async function preview(data) {
     throw new AppError(400, 'Select one or more Silo libraries.');
   }
   const [detail, libraries] = await Promise.all([source.details(id), silo.libraries()]);
-  const libraryType = data.kind === 'movie' ? 'movies' : 'series';
-  if (libraryIds.some((id) => !libraries.some((library) => library.id === id && [libraryType, 'mixed'].includes(library.type)))) {
+  if (libraryIds.some((id) => !libraries.some((library) => library.id === id && previewKind(library) === data.kind))) {
     throw new AppError(400, 'A selected Silo library is unavailable for this media type.');
   }
   const libraryNames = new Map(libraries.map(({ id, name }) => [id, name]));
   return { detail, libraryIds, libraryNames, matches: matchMembers(detail.members, await silo.catalog(libraryIds, data.kind)) };
+}
+
+function posterUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048) throw new AppError(400, 'Enter a direct public HTTPS poster URL.');
+  return publicArtworkUrl(value.trim()).href;
+}
+
+async function selectedPoster(data, required = false) {
+  if (data.posterUrl != null) {
+    if (data.posterId != null) throw new AppError(400, 'Choose either a gallery poster or a poster URL.');
+    return { image: posterUrl(data.posterUrl), custom: true };
+  }
+  if (data.posterId != null) {
+    if (typeof data.posterId !== 'string' || !/^\d{1,15}$/.test(data.posterId)) throw new AppError(400, 'Invalid poster.');
+    const poster = await source.posterById(data.posterId, data.posterCreator);
+    if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
+    return poster;
+  }
+  if (required) throw new AppError(400, 'Choose a poster or enter a poster URL.');
 }
 
 async function selectedBackdrop(data) {
@@ -113,7 +133,8 @@ async function selectedBackdrop(data) {
 }
 
 async function browseTVDb(query, cursor, kind, sort) {
-  const candidates = filter(await source.tvIndex(), query, 1, Number.MAX_SAFE_INTEGER, sort).items;
+  const candidates = filter((await source.tvIndex()).filter((item) => allowedFranchiseTitle(item.title)),
+    query, 1, Number.MAX_SAFE_INTEGER, sort).items;
   const size = 12;
   const matches = [];
   let next = cursor;
@@ -141,7 +162,7 @@ createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://images.theposterdb.com https://image.tmdb.org; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: https://images.theposterdb.com https://image.tmdb.org; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   try {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, { ok: true });
@@ -157,7 +178,8 @@ createServer(async (req, res) => {
         const asset = assets.get(path);
         return send(res, 200, asset.body, asset.mime);
       }
-      if (path === '/api/libraries') return send(res, 200, (await silo.libraries()).map(({ id, name, type }) => ({ id, name, type })));
+      if (path === '/api/libraries') return send(res, 200, (await silo.libraries())
+        .map((library) => ({ id: library.id, name: library.name, type: library.type, previewKind: previewKind(library) })));
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
       if (path === '/api/collection') {
         const { value, etag } = await silo.getCollection(collectionId(input.get('id')));
@@ -174,7 +196,8 @@ createServer(async (req, res) => {
           return send(res, 200, await browseTVDb(query, cursor, kind, sort));
         }
         if (provider !== 'tmdb' || kind !== 'movie') throw new AppError(400, 'Choose a source for this media type.');
-        return send(res, 200, filter(await source.movieIndex(), query, number, 48, sort === 'popular' ? null : sort));
+        return send(res, 200, filter((await source.movieIndex()).filter((item) => allowedFranchiseTitle(item.title)),
+          query, number, 48, sort === 'popular' ? null : sort));
       }
       if (path === '/api/detail') return send(res, 200, await source.details(key(input.get('provider'), input.get('id'), input.get('kind'))));
       if (path === '/api/metadata') return send(res, 200, await source.metadata(key(input.get('provider'), input.get('id'), input.get('kind'))));
@@ -206,6 +229,13 @@ createServer(async (req, res) => {
         libraries: libraryIds.filter((id) => found.includes(id)).map((id) => libraryNames.get(id)),
       })));
     }
+    if (req.method === 'POST' && path === '/api/poster-preview') {
+      const data = await body(req);
+      const image = await downloadPublicArtwork(posterUrl(data.url));
+      const [mime] = imageType(image);
+      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': image.length });
+      return res.end(image);
+    }
     if (req.method === 'POST' && path === '/api/edit') {
       const data = await body(req);
       const id = collectionId(data.collectionId);
@@ -214,12 +244,7 @@ createServer(async (req, res) => {
         typeof data.etag !== 'string' || !data.etag || data.etag === '*') {
         throw new AppError(400, 'Open the collection and enter a valid title and description.');
       }
-      let poster;
-      if (data.posterId != null) {
-        if (typeof data.posterId !== 'string' || !/^\d{1,15}$/.test(data.posterId)) throw new AppError(400, 'Invalid poster.');
-        poster = await source.posterById(data.posterId, data.posterCreator);
-        if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
-      }
+      const poster = await selectedPoster(data);
       let members = [];
       if (data.contentIds != null) {
         if (!Array.isArray(data.contentIds) || data.contentIds.length > 1000 || data.contentIds.some((id) => typeof id !== 'string')) {
@@ -232,7 +257,7 @@ createServer(async (req, res) => {
           if (members.some((item) => !item)) throw new AppError(409, 'Library matches changed. Preview again before saving.');
         }
       }
-      const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members,
+      const updated = await silo.updateCollection({ id, title, description: data.description, poster, etag: data.etag, members, sort: data.sort,
         ...await selectedBackdrop(data) });
       return send(res, 200, { ...publicCollection(updated), added: updated.added });
     }
@@ -241,7 +266,6 @@ createServer(async (req, res) => {
       const title = typeof data.title === 'string' ? data.title.trim() : '';
       if (!title || title.length > 150 || !Array.isArray(data.contentIds) || !data.contentIds.length ||
         data.contentIds.length > 1000 || data.contentIds.some((id) => typeof id !== 'string') ||
-        typeof data.posterId !== 'string' || !/^\d{1,15}$/.test(data.posterId) ||
         (data.description != null && (typeof data.description !== 'string' || data.description.length > 8000))) {
         throw new AppError(400, 'Choose a title, a poster, and at least one matched library item.');
       }
@@ -253,8 +277,7 @@ createServer(async (req, res) => {
       if (members.some((m) => !m)) throw new AppError(409, 'Library matches changed. Preview again before importing.');
       const eligible = eligibleCollection(libraryIds, members);
       if (!eligible.libraryIds.length) throw new AppError(422, 'Select at least two matched titles in the same library to create a collection.');
-      const poster = await source.posterById(data.posterId, data.posterCreator);
-      if (!poster) throw new AppError(404, 'That poster is unavailable in the selected ThePosterDB gallery.');
+      const poster = await selectedPoster(data, true);
       let metadata = detail.metadata;
       let warning;
       if (!metadata && (data.description == null || data.includeBackdrop !== false)) {
@@ -263,7 +286,7 @@ createServer(async (req, res) => {
       }
       const chosen = await selectedBackdrop(data);
       const result = await silo.publish({ detail, title, libraryIds: eligible.libraryIds, members: eligible.members, poster,
-        description: data.description ?? metadata?.description?.slice(0, 8000), sync,
+        description: data.description ?? metadata?.description?.slice(0, 8000), sync, sort: data.sort,
         backdrop: data.kind === 'movie' && data.includeBackdrop !== false ? metadata?.backdrop : '', ...chosen });
       return send(res, 201, { ...result, warning: result.warning ?? warning,
         skippedLibraries: eligible.skipped.map((id) => libraryNames.get(id)) });
