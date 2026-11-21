@@ -1,42 +1,27 @@
 # Silo Franchises
 
-A self-hosted Silo sidecar. Browse TMDb movie collections and TheTVDB official lists, choose a ThePosterDB collection poster, preview the movies and series available in selected Silo libraries, and import a manual server collection.
+A free, self-hosted companion to Silo for building and maintaining movie and TV franchise collections.
 
-## Deploy in Portainer
+## Features
 
-1. Copy this directory into a Git repository that Portainer can read. In a Docker Standalone environment, select **Stacks → Add stack → Git repository**. Set the Compose path to `compose.yaml` (or `silo-franchises/compose.yaml` if the directory is nested).
-2. Set `APP_PASSWORD` to a unique password with at least 16 characters. `APP_USER` defaults to `admin`.
-3. Set `SILO_API_KEY` to a Silo administrator API key. If using scopes, grant only the access needed to read libraries and catalog items and to list, create, and edit server collections and upload posters. The URL defaults to your Silo server.
-4. Set `TMDB_READ_TOKEN` to the **API Read Access Token** from your TMDb account. TheTVDB requires no API key. The app indexes only the [official list directory](https://thetvdb.com/lists) and checks that every selected list is in that directory before loading its members.
-5. Deploy. The default host binding is `127.0.0.1:8088`. Access it through an HTTPS reverse proxy or an SSH tunnel. If the proxy runs in Docker, attach it to the app's network and forward to `silo-franchises:8080`. A plain-HTTP public port exposes the app password.
+- Browse TMDb movie collections and official TheTVDB lists in a page-numbered editor. Filter by English or Dutch titles, hide franchises, and choose which Silo libraries appear.
+- Preview matches across selected libraries, fix ambiguous matches, and save library presets. New collections require at least two distinct titles in an eligible library.
+- Browse and compare English-language artwork from ThePosterDB, paste a custom poster URL, or select movie backdrops from TMDb.
+- Create and edit manual collections, or create TMDb-synced movie collections. Sort collection cards A–Z in Silo and undo recent metadata or artwork edits.
+- Prepare, preview, and apply bulk changes on dedicated movie and TV queue pages. Drafts save to the server and can be resumed from another device.
+- Review collection health, request missing titles through Silo Requests, and optionally add them to manual collections once they reach a selected library.
 
-To run with Docker Compose from a shell, copy `.env.example` to `.env`, fill in the three secrets, and run `docker compose up --build -d`. Keep `.env` out of Git. For a Portainer web-editor stack, first build the image on the target Docker host with `docker build -t silo-franchises:local .`, then paste the Compose file with the `build: .` line removed. For Swarm use a prebuilt image available to the swarm rather than an in-stack build.
+## Quick start
 
-## How imports work
+1. Clone this repository or create a **Git repository** stack in Portainer with `compose.yaml`.
+2. Set `SILO_URL` to your server address, `SILO_API_KEY` to a Silo key with catalog and collection access, and `TMDB_READ_TOKEN` to your TMDb API Read Access Token.
+3. Choose an `APP_PASSWORD` of at least 16 characters. `APP_USER` defaults to `admin`. For local Compose, copy `.env.example` to `.env` and fill in the values before starting.
+4. Use an existing Docker network named `proxy`, or create it with `docker network create proxy`. Deploy the stack or run `docker compose up --build -d`. The app binds to `127.0.0.1:8088` by default. An HTTPS reverse proxy on the `proxy` network can forward to `silo-franchises:8080`.
 
-- **Movies** and **TV** open separate pages. Official lists that span both media types are filtered to movies or series before matching. The movie page also offers TMDb.
-- TV descriptions come from TheTVDB and remain editable. TV backdrops start blank. To add one, enter a direct public HTTPS image URL.
-- Movie descriptions and backdrops come from TMDb. Open **Browse movie backdrops** for images from the individual films. Movies listed on TheTVDB use a related TMDb film for the initial description and artwork.
-- **Keep collection synced with TMDb** is available for TMDb movie franchises. It creates a native Silo TMDb-backed collection with a daily sync. The first sync runs immediately. Silo must have its own TMDb integration configured. The two-title minimum still applies to each selected library when creating it.
-- Select franchises while browsing, then open **Bulk queue** from the top navigation. Movies and TV each have a dedicated queue page. Set the libraries and poster source under **Preparation settings**, then choose **Prepare selected**. Open unfinished entries to choose artwork or adjust matches and save them back to the queue. **Preview changes** checks queued entries without writing to Silo. **Apply ready** submits eligible entries. **Saved queue and history** lets you reload drafts or retry individual failures in the same browser.
-- Use **Hide** to remove an unwanted entry from the browse results. The server saves hidden entries separately for movies and TV, and **Hidden franchises** lets you restore them. The **Title language** filter uses provider title translations and defaults to English with Dutch as a fallback. Select English or Dutch for a single language, or **Original titles** to browse titles without requiring translations. Search and sort use the provider's indexed titles.
-- Use **In Silo** or an **In Silo · Edit** badge to change a collection's name, description, or artwork. For manual collections with a known franchise source, preview matches and select titles to append to the collection.
-- **Queue changes** adds an existing-collection edit to the bulk queue. Open the queue entry to revise it or select **Apply ready** to save it in Silo.
+The `poster-index` volume stores artwork indexes, drafts, settings, and history. For requests, enable Silo Requests and configure fulfillment in Silo. Set `SILO_REQUEST_API_KEY` to a profile-bound key with the `requests` scope if the collection key lacks permission.
 
-- Select a franchise and the libraries to search. The preview matches existing library entries by TMDb, TheTVDB, or IMDb ID, then by unambiguous title and year when available. It shows unmatched titles and lets you deselect matched titles before importing.
-- The **Poster source** menu searches English-language collection artwork from RedHeadJedi, ishalioh, ashlyfxxk, XDM, mikenobbs, DarkMatte, DIIIVOY, cmanuelg1989, KyleKahotek, j.zapattack, and Lafferlaffer. Select one creator or search all eleven together. Every result shows the creator. The app uploads the optimized JPEG from the selected public gallery to Silo.
-- **Custom poster URL** previews an image from a direct public HTTPS link and selects it for upload. **In Silo → Sort collections A–Z in Silo** updates the display order within each collection group in the selected library. **Hide collections already in Silo** filters the franchise browser while keeping the **In Silo** editor available.
-- Save named library presets separately for Movies and TV in the current browser. **Missing titles** lists unmatched and ambiguous entries. Use **Match manually** to search the selected libraries and choose a replacement for an individual franchise member before saving a manual collection.
-- Use **Compare** to shortlist up to three gallery posters side by side, then use the one you prefer. Under **In Silo**, open **Collection health** to review missing artwork and check individual linked manual collections for missing, ambiguous, or available titles.
-- Docker Compose stores the English poster index in the `poster-index` volume. After the initial crawl it searches the saved index and refreshes it in the background. An older snapshot stays available if a refresh fails.
-- The preview shows every selected library that contains each match. For new collections, a library qualifies only when it contains at least two distinct selected titles. A collection can span the qualifying libraries. The same minimum applies to movie and TV imports, including the bulk queue.
-- Enable **Request missing titles after creating this collection** on a new import to submit unmatched titles with known TMDb IDs through Silo Requests. Enable Requests and configure fulfillment in Silo first. If the collection API key cannot submit requests, set `SILO_REQUEST_API_KEY` to a profile-bound Silo key with the `requests` scope. Set `SILO_REQUEST_PROFILE_ID` only if the request credential needs an explicit profile. Silo applies its own approval, quota, availability, and duplicate checks.
-- **Collection health → Check titles** includes request status and links to Silo. Enable auto-add on a manual import or change it in Collection health. The app checks every five minutes and adds uniquely matched requested titles once they appear in a collection library.
-- Movies and TV bulk queues save separately on the server. Open the app on another device or use **Load saved queue** to resume. A revision check guards against simultaneous changes from another browser.
-- **Undo last edit** restores the prior title, description, and any artwork replaced by an edit. The app retains up to three snapshots per collection. A Silo revision check guards against overwriting subsequent changes.
-- An import creates a manual Silo server collection with only the selected titles from qualifying libraries. It does not download media, change existing media metadata, or schedule future collection updates.
-- Sort by title on either page or by star count when browsing TheTVDB.
-- Existing same-name collections in the same libraries are protected. If an import creates the collection but is interrupted during member addition or upload, retry with the same franchise, name, and library selection to resume. The app adds selected members and uploads the chosen artwork. It does not remove members from a previous attempt.
-- TMDb's daily collection export, TheTVDB's public list directory, and ThePosterDB's public gallery pages are cached in memory. Poster search loads pages progressively. Library previews fetch franchise details and library inventory concurrently and reuse complete inventories for up to ten minutes. Cold requests still depend on the size of your libraries and upstream response times.
+## License
 
-This app uses the [Silo v2 catalog API](https://github.com/Silo-Server/silo-server/blob/main/docs/catalog-api.md), [TMDb daily collection exports](https://developer.themoviedb.org/docs/daily-id-exports), and [TheTVDB official lists](https://www.thetvdb.com/lists). Poster cards credit their [ThePosterDB](https://theposterdb.com/) creators.
+The app is released under the [MIT License](LICENSE). Poster artwork and provider metadata are subject to the respective providers’ terms.
+
+Uses [Silo](https://github.com/Silo-Server/silo-server), [TMDb](https://www.themoviedb.org/), [TheTVDB official lists](https://thetvdb.com/lists), and [ThePosterDB](https://theposterdb.com/).

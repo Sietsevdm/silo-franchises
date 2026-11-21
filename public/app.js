@@ -4,6 +4,8 @@ const create = (tag, text) => Object.assign(document.createElement(tag), { textC
 const checked = (container) => [...el(container).querySelectorAll('input:checked')].map((input) => input.value);
 const route = location.pathname;
 const bulkPage = route === '/bulk' || route.startsWith('/bulk/');
+const settingsPage = route === '/settings';
+const browsePage = !bulkPage && !settingsPage;
 const kind = route.endsWith('/tv') ? 'series' : 'movie';
 const browsePath = kind === 'series' ? '/tv' : '/movies';
 const queuePath = '/bulk' + browsePath;
@@ -54,6 +56,7 @@ const matchesFor = (item) => state.existing.filter((collection) => {
   return sourceKey(collection.sourceUrl) === sourceKey(item.url) || keys.includes(titleKey(collection.title));
 });
 function isCurrentKind(collection) {
+  if (Array.isArray(state.libraryPreference) && !collection.libraryIds.some((id) => state.libraryPreference.includes(id))) return false;
   if (collection.sourceUrl?.includes('themoviedb.org/collection/')) return kind === 'movie';
   return collection.libraryIds.some((id) => {
     const type = state.libraries.find((lib) => lib.id === id)?.type;
@@ -145,18 +148,41 @@ async function changeHidden(item, hidden, button) {
   finally { button.disabled = false; }
 }
 
-async function listFranchises(reset) {
+function drawPagination(result) {
+  const navigation = el('franchise-pages');
+  const active = state.page;
+  if (result.more && result.next != null) state.pageCursors.set(active + 1, result.next);
+  const count = result.total == null ? Math.max(...state.pageCursors.keys())
+    : Math.ceil(result.total / (state.provider === 'silo' ? 24 : 48));
+  const button = (text, page, disabled = false) => {
+    const element = action(text, () => listFranchises(false, page));
+    element.disabled = disabled;
+    return element;
+  };
+  const numbers = [];
+  for (let page = Math.max(1, active - 3); page <= Math.min(count, active + 3); page++) {
+    const element = button(String(page), page, page === active);
+    element.setAttribute('aria-label', 'Page ' + page);
+    if (page === active) element.setAttribute('aria-current', 'page');
+    numbers.push(element);
+  }
+  navigation.replaceChildren();
+  if (count > 1) navigation.append(button('Previous', active - 1, active === 1),
+    ...numbers, button('Next', active + 1, active >= count));
+}
+
+async function listFranchises(reset, page = 1) {
   const run = state.franchiseRun = Symbol();
-  el('more-franchises').hidden = true;
+  for (const button of el('franchise-pages').querySelectorAll('button')) button.disabled = true;
   if (reset) {
-    state.page = 1;
-    state.cursor = 0;
+    state.pageCursors = new Map([[1, 0]]);
     state.query = el('franchise-query').value.trim();
     state.sort = el('franchise-sort').value;
     state.language = el('title-language').value;
     state.rows = [];
     drawRows();
   }
+  state.page = page;
   status('franchise-status', 'Loading…');
   try {
     if (state.provider === 'silo' && state.existingError) throw new Error(state.existingError);
@@ -168,19 +194,27 @@ async function listFranchises(reset) {
         const direction = state.sort === 'title-asc' ? 1 : -1;
         items.sort((a, b) => direction * sortedTitles.compare(a.title, b.title));
       }
-      result = { items };
+      result = { items: items.slice((page - 1) * 24, page * 24), total: items.length };
     } else {
       result = await api('franchises?' + params({ provider: state.provider, kind, q: state.query, page: state.page,
-        cursor: state.cursor, sort: state.sort, language: state.language }));
+        cursor: state.pageCursors.get(page) ?? 0, sort: state.sort, language: state.language }));
     }
     if (state.franchiseRun !== run) return;
-    state.rows.push(...result.items);
-    state.cursor = result.next ?? 0;
+    state.rows = result.items;
     drawRows();
-    el('more-franchises').hidden = !result.more;
-    status('franchise-status', state.rows.length ? '' : result.more ? 'No matches among the lists checked so far.' : 'No collections found.');
+    drawPagination(result);
+    status('franchise-status', state.rows.length ? '' : result.more ? 'No matches on this page. Choose the next page to continue.' : 'No collections found.');
+    if (!reset) {
+      el('browse-panel').scrollTop = 0;
+      if (matchMedia('(max-width: 1100px)').matches) el('page-title').scrollIntoView({ block: 'start' });
+    }
   } catch (error) {
-    if (state.franchiseRun === run) status('franchise-status', error.message);
+    if (state.franchiseRun === run) {
+      status('franchise-status', error.message);
+      for (const button of el('franchise-pages').querySelectorAll('button')) {
+        if (!button.hasAttribute('aria-current')) button.disabled = false;
+      }
+    }
   }
 }
 
@@ -271,6 +305,7 @@ function openPanel(title, editing) {
   document.body.classList.add('editor-open');
   el('work-panel').hidden = false;
   el('artwork-panel').hidden = false;
+  el('close-editor').hidden = false;
   state.comparison = new Map();
   drawPosterComparison();
   el('selection-empty').hidden = true;
@@ -337,9 +372,17 @@ el('close-editor').onclick = () => {
   state.artworkFranchise = null;
   for (const run of ['editRun', 'metadataRun', 'backdropRun', 'posterRun', 'customPosterRun']) state[run] = null;
   invalidateMatches();
-  document.body.classList.remove('editor-open');
-  el('work-panel').hidden = true;
-  el('artwork-panel').hidden = true;
+  if (bulkPage) document.body.classList.remove('editor-open');
+  el('work-panel').hidden = bulkPage;
+  el('artwork-panel').hidden = bulkPage;
+  el('close-editor').hidden = true;
+  el('selection').hidden = true;
+  el('selection-empty').hidden = false;
+  el('poster-tools').hidden = true;
+  el('gallery-link').hidden = true;
+  el('tmdb-backdrop').hidden = true;
+  status('selection-title', 'Your collection');
+  showPoster(null);
   drawRows();
   const heading = el(bulkPage ? 'batch-title' : 'page-title');
   heading.tabIndex = -1;
@@ -595,8 +638,25 @@ function updateActions() {
 async function loadLibraries() {
   status('library-status', 'Connecting to Silo…');
   try {
-    state.libraries = await api('libraries');
-    const eligible = state.libraries.filter((lib) => lib.previewKind === kind);
+    const [libraries, preferences] = await Promise.all([api('libraries'), api('settings')]);
+    state.libraries = libraries;
+    state.libraryPreference = preferences.libraryIds;
+    if (settingsPage) {
+      for (const [type, target] of [['movie', 'settings-movies'], ['series', 'settings-tv']]) {
+        const group = libraries.filter((lib) => lib.previewKind === type);
+        for (const lib of group) {
+          const label = create('label');
+          label.append(inputCheck(lib.id, !preferences.libraryIds || preferences.libraryIds.includes(lib.id)),
+            document.createTextNode(lib.name));
+          el(target).append(label);
+        }
+        if (!group.length) el(target).append(create('p', 'No eligible libraries found.'));
+      }
+      el('save-settings').disabled = false;
+      return;
+    }
+    const eligible = libraries.filter((lib) => lib.previewKind === kind &&
+      (!preferences.libraryIds || preferences.libraryIds.includes(lib.id)));
     if (bulkPage) {
       const previous = stored('silo-bulk-libraries-' + kind, []);
       for (const lib of eligible) {
@@ -618,8 +678,18 @@ async function loadLibraries() {
       el('libraries').append(label);
     }
     status('library-status', eligible.length ? '' : 'No enabled Silo libraries for this media type.');
-  } catch (error) { status(bulkPage ? 'bulk-library-status' : 'library-status', error.message); }
+  } catch (error) { status(settingsPage ? 'settings-status' : bulkPage ? 'bulk-library-status' : 'library-status', error.message); }
 }
+el('settings-form').onsubmit = async (event) => {
+  event.preventDefault();
+  const button = el('save-settings');
+  button.disabled = true;
+  try {
+    await post('settings', { libraryIds: [...checked('settings-movies'), ...checked('settings-tv')] });
+    status('settings-status', 'Library visibility saved.');
+  } catch (error) { status('settings-status', error.message); }
+  finally { button.disabled = false; }
+};
 
 function drawPresets(selected = '') {
   el('library-preset').replaceChildren(new Option('Choose a preset', ''),
@@ -951,7 +1021,7 @@ async function syncServerQueue() {
   if (queueSnapshot() !== lastSavedQueue) void syncServerQueue();
 }
 
-for (const id of ['bulk-page', 'movies-page', 'tv-page', 'movie-queue-page', 'tv-queue-page', 'queue-browse-link']) {
+for (const id of ['bulk-page', 'movies-page', 'tv-page', 'movie-queue-page', 'tv-queue-page', 'queue-browse-link', 'settings-page']) {
   el(id).addEventListener('click', async (event) => {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey ||
       (lastSavedQueue === queueSnapshot() && !queueWrite)) return;
@@ -1242,7 +1312,6 @@ el('undo-edit').onclick = async () => {
 el('all-posters').onclick = () => { el('poster-query').value = ''; listPosters(true); };
 el('poster-source').onchange = () => listPosters(true);
 el('more-posters').onclick = () => { state.posterPage++; listPosters(false); };
-el('more-franchises').onclick = () => { state.page++; listFranchises(false); };
 el('poster-form').onsubmit = (event) => { event.preventDefault(); listPosters(true); };
 el('franchise-form').onsubmit = (event) => { event.preventDefault(); listFranchises(true); };
 el('franchise-sort').onchange = () => listFranchises(true);
@@ -1296,10 +1365,14 @@ function updateSortOptions() {
 }
 updateSortOptions();
 document.body.classList.toggle('bulk-page', bulkPage);
+document.body.classList.toggle('editor-open', browsePage);
 el('bulk-page').href = queuePath;
-el('browse-panel').hidden = bulkPage;
+el('browse-panel').hidden = !browsePage;
 el('bulk-panel').hidden = !bulkPage;
-el(bulkPage ? 'bulk-page' : kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
+el('settings-panel').hidden = !settingsPage;
+el('work-panel').hidden = !browsePage;
+el('artwork-panel').hidden = !browsePage;
+el(settingsPage ? 'settings-page' : bulkPage ? 'bulk-page' : kind === 'series' ? 'tv-page' : 'movies-page').setAttribute('aria-current', 'page');
 status('page-title', kind === 'series' ? 'TV Franchises' : 'Movie Franchises');
 if (bulkPage) {
   el('queue-browse-link').href = browsePath;
@@ -1311,9 +1384,9 @@ if (bulkPage) {
   if (!el('bulk-poster-source').value) el('bulk-poster-source').value = 'all';
   el('bulk-poster-source').onchange = () => store('silo-bulk-creator-' + kind, el('bulk-poster-source').value);
   drawQueue();
-} else {
+} else if (browsePage) {
   void listFranchises(true);
   void loadHidden();
 }
-void loadLibraries().then(refreshExisting);
-void loadServerQueue();
+void loadLibraries().then(() => { if (!settingsPage) return refreshExisting(); });
+if (!settingsPage) void loadServerQueue();

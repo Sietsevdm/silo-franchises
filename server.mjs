@@ -9,6 +9,7 @@ import { appState } from './app-state.mjs';
 
 const env = process.env;
 if (!env.APP_PASSWORD || env.APP_PASSWORD.length < 16) throw new Error('Set APP_PASSWORD to at least 16 characters.');
+if (!env.SILO_URL) throw new Error('Set SILO_URL to your Silo server address.');
 const username = env.APP_USER || 'admin';
 const digest = (value) => createHash('sha256').update(value).digest();
 const auth = digest(`${username}:${env.APP_PASSWORD}`);
@@ -17,7 +18,7 @@ const state = await appState(env.POSTER_INDEX_DIR);
 const posterIndex = await posterCache(posterSources, source.posterIndex, env.POSTER_INDEX_DIR);
 void posterIndex.refresh();
 setInterval(() => void posterIndex.refresh(), 30 * 60 * 1000).unref();
-const silo = siloClient(env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz', env.SILO_API_KEY, {
+const silo = siloClient(env.SILO_URL, env.SILO_API_KEY, {
   requestKey: env.SILO_REQUEST_API_KEY, requestProfileId: env.SILO_REQUEST_PROFILE_ID,
 });
 const activeCollections = new Set();
@@ -95,7 +96,7 @@ const publicCollection = (item) => ({
   syncStatus: item.last_sync_status,
 });
 const assets = new Map(await Promise.all([
-  ...['/', '/movies', '/tv', '/bulk', '/bulk/movies', '/bulk/tv'].map((path) => [path, 'index.html', 'text/html']),
+  ...['/', '/movies', '/tv', '/bulk', '/bulk/movies', '/bulk/tv', '/settings'].map((path) => [path, 'index.html', 'text/html']),
   ['/style.css', 'style.css', 'text/css'], ['/app.js', 'app.js', 'text/javascript'],
 ].map(async ([path, name, mime]) => [path, { body: await readFile(new URL('./public/' + name, import.meta.url)), mime }])));
 
@@ -279,6 +280,7 @@ createServer(async (req, res) => {
       }
       if (path === '/api/libraries') return send(res, 200, (await silo.libraries())
         .map((library) => ({ id: library.id, name: library.name, type: library.type, previewKind: previewKind(library) })));
+      if (path === '/api/settings') return send(res, 200, await state.get('settings', 'libraries') ?? { libraryIds: null });
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
       if (path === '/api/drafts') return send(res, 200, await state.get('drafts', queueKind(input.get('kind'))) ?? { revision: 0 });
       if (path === '/api/hidden-franchises') return send(res, 200, await state.get('hidden', queueKind(input.get('kind'))) ?? []);
@@ -295,9 +297,9 @@ createServer(async (req, res) => {
         const tracked = await state.get('requests', id);
         const requestInfo = { requests: (tracked?.titles ?? []).map((item) => ({
           ...item, url: new URL('/requests/' + item.type + '/' + item.tmdb,
-            env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz').href,
+            env.SILO_URL).href,
         })), autoAdd: tracked?.autoAdd ?? false, autoAddError: tracked?.autoAddError, canAutoAdd: collection.kind === 'manual',
-          requestQueueUrl: new URL('/admin/requests', env.SILO_URL || 'https://thevault.box74.appboxmanager.xyz').href };
+          requestQueueUrl: new URL('/admin/requests', env.SILO_URL).href };
         const sourceUrl = collection.sourceUrl ?? '';
         const movie = sourceUrl.match(/^(?:tmdb:\/\/collection\/|https:\/\/(?:www\.)?themoviedb\.org\/collection\/)(\d+)(?:-[\w-]+)?\/?$/);
         const tvdb = sourceUrl.match(/^https:\/\/(?:www\.)?thetvdb\.com\/lists\/([a-z0-9-]+)\/?$/);
@@ -390,6 +392,18 @@ createServer(async (req, res) => {
         return { revision: revision + 1, queue: { selected: queue.selected, drafts: queue.drafts, edits: queue.edits } };
       });
       return send(res, 200, { revision: result.revision });
+    }
+    if (req.method === 'POST' && path === '/api/settings') {
+      const { libraryIds } = await body(req);
+      if (!Array.isArray(libraryIds) || libraryIds.some((id) => typeof id !== 'string')) {
+        throw new AppError(400, 'Choose valid library IDs.');
+      }
+      const libraries = (await silo.libraries()).filter((library) => previewKind(library));
+      const available = new Set(libraries.map(({ id }) => id));
+      const selected = [...new Set(libraryIds)];
+      if (selected.some((id) => !available.has(id))) throw new AppError(409, 'The library list changed. Refresh Settings and try again.');
+      const result = await state.update('settings', 'libraries', () => ({ libraryIds: selected }));
+      return send(res, 200, result);
     }
     if (req.method === 'POST' && path === '/api/hidden-franchises') {
       const data = await body(req);

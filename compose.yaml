@@ -9,7 +9,7 @@ services:
     environment:
       APP_USER: "${APP_USER:-admin}"
       APP_PASSWORD: "${APP_PASSWORD:?Set APP_PASSWORD}"
-      SILO_URL: "${SILO_URL:-https://thevault.box74.appboxmanager.xyz}"
+      SILO_URL: "${SILO_URL:?Set SILO_URL}"
       SILO_API_KEY: "${SILO_API_KEY:?Set SILO_API_KEY}"
       SILO_REQUEST_API_KEY: "${SILO_REQUEST_API_KEY:-}"
       SILO_REQUEST_PROFILE_ID: "${SILO_REQUEST_PROFILE_ID:-}"

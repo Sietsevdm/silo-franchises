@@ -13,6 +13,7 @@
     <nav aria-label="Franchise pages">
       <a href="/movies" id="movies-page">Movies</a><a href="/tv" id="tv-page">TV</a>
       <a href="/bulk/movies" id="bulk-page">Bulk queue <span id="nav-queue-count" hidden></span></a>
+      <a href="/settings" id="settings-page">Settings</a>
     </nav>
   </header>
   <main>
@@ -60,7 +61,17 @@
           <div id="health-rows"></div>
         </details>
         <div id="franchises" class="franchises"></div>
-        <button id="more-franchises" type="button" hidden>Load more franchises</button>
+        <nav id="franchise-pages" class="line pagination" aria-label="Franchise result pages"></nav>
+      </section>
+      <section id="settings-panel" class="panel settings" aria-labelledby="settings-title" hidden>
+        <h1 id="settings-title">Settings</h1>
+        <form id="settings-form">
+          <p>Choose which libraries appear in the editor, bulk preparation, and collection order controls.</p>
+          <fieldset><legend>Movie libraries</legend><div id="settings-movies"></div></fieldset>
+          <fieldset><legend>TV libraries</legend><div id="settings-tv"></div></fieldset>
+          <button class="accent" id="save-settings" type="submit" disabled>Save libraries</button>
+          <p id="settings-status" role="status"></p>
+        </form>
       </section>
       <section id="bulk-panel" class="panel bulk" aria-labelledby="batch-title" hidden>
         <h1 id="batch-title">Bulk queue</h1>
@@ -84,12 +95,12 @@
         </details>
       </section>
       <section id="work-panel" class="panel work" aria-labelledby="selection-title" hidden>
-        <button id="close-editor" type="button">Close editor</button>
+        <button id="close-editor" type="button" hidden>Close editor</button>
         <div class="collection-hero">
           <img id="tmdb-backdrop" alt="" hidden>
           <h2 id="selection-title">Your collection</h2>
         </div>
-        <p id="selection-empty" hidden>Open a franchise to review titles and choose its artwork.</p>
+        <p id="selection-empty">Choose a franchise to edit its details, match library titles, and select artwork.</p>
         <div id="selection" hidden>
           <div class="line"><p id="detail-status" role="status"></p><a id="source-link" target="_blank" rel="noopener">View source</a></div>
           <section class="editor-section" aria-labelledby="details-title">

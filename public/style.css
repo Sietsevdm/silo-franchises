@@ -194,6 +194,9 @@ body:not(.editor-open) .franchise-row {
 .bulk-settings { background: var(--panel); }
 .bulk-settings .field { margin-bottom: 0; }
 .bulk-actions { margin-bottom: .85rem; }
+.pagination { margin-top: .8rem; justify-content: flex-start; }
+.pagination button[aria-current=page] { opacity: 1; background: var(--accent); color: var(--accent-ink); }
+.settings { max-width: 52rem; margin-inline: auto; }
 .browse-filters { margin: .65rem 0; }
 .browse-filters label { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; }
 #hidden-franchises { margin: .6rem 0; }
