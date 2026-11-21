@@ -3,5 +3,6 @@
 !server.mjs
 !providers.mjs
 !silo.mjs
+!remote-artwork.mjs
 !public/
 !public/**
