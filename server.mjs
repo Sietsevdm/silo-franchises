@@ -86,7 +86,7 @@ async function preview(data) {
   if (libraryIds.some((id) => !libraries.some((library) => library.id === id && [libraryType, 'mixed'].includes(library.type)))) {
     throw new AppError(400, 'A selected Silo library is unavailable for this media type.');
   }
-  return { detail, libraryIds, matches: matchMembers(detail.members, await silo.catalog(libraryIds)) };
+  return { detail, libraryIds, matches: matchMembers(detail.members, await silo.catalog(libraryIds, data.kind)) };
 }
 
 async function browseTVDb(query, cursor, kind) {
@@ -203,6 +203,7 @@ createServer(async (req, res) => {
   } catch (error) {
     const handled = error instanceof AppError;
     if (!handled) console.error('Request could not be completed:', error.name);
+    if (handled && error.status === 429 && /^\d+$/.test(error.retryAfter ?? '')) res.setHeader('Retry-After', error.retryAfter);
     if (!res.headersSent) send(res, handled ? error.status : 502, { error: handled ? error.message : 'The request could not be completed.' });
   }
 }).listen(Number(env.PORT || 8080), '0.0.0.0', () => console.log('Silo Franchises is ready.'));
