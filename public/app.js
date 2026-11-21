@@ -221,7 +221,17 @@ function renderMatches(result, chosen) {
       row.append(inputCheck(item.contentId, !chosen || chosen.includes(item.contentId), updateActions));
       used.add(item.contentId);
     } else row.classList.add('missing');
-    row.append(create('span', item.title + (item.year ? ` (${item.year})` : '')), create('small', item.basis));
+    const details = create('div');
+    details.className = 'match-details';
+    details.append(create('span', item.title + (item.year ? ` (${item.year})` : '')));
+    if (item.libraries?.length) {
+      const libraries = create('span');
+      libraries.className = 'match-libraries';
+      libraries.setAttribute('aria-label', 'Found in libraries');
+      for (const name of item.libraries) libraries.append(create('span', name));
+      details.append(libraries);
+    }
+    row.append(details, create('small', item.basis));
     el('matches').append(row);
   }
   status('match-status', `${used.size} of ${result.length} titles matched.`);
