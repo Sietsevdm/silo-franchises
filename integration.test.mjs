@@ -70,3 +70,21 @@ test('creates a manual collection and resumes after an interrupted artwork uploa
   assert.equal(creates, 1);
   assert.deepEqual(members, [0, 0]);
 });
+
+test('editing uses the selected collection and rejects stale data before patching', async (t) => {
+  let writes = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(new URL(url).pathname, '/api/v2/admin/collections/42');
+    if (options.method === 'GET') return Response.json({ id: '42', title: 'Old' }, { headers: { ETag: '"v2"' } });
+    assert.equal(options.method, 'PATCH');
+    assert.equal(options.headers['If-Match'], '"v2"');
+    assert.deepEqual(JSON.parse(options.body), { title: 'New', description: 'Edited' });
+    writes++;
+    return Response.json({ id: '42', title: 'New' });
+  });
+  const silo = siloClient('https://example.test/', 'fake-silo-key');
+  const input = { id: '42', title: 'New', description: 'Edited' };
+  await assert.rejects(silo.updateCollection({ ...input, etag: '"v1"' }), { status: 412 });
+  assert.deepEqual(await silo.updateCollection({ ...input, etag: '"v2"' }), { id: '42', title: 'New' });
+  assert.equal(writes, 1);
+});
