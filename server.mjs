@@ -222,7 +222,7 @@ createServer(async (req, res) => {
       if (path === '/api/posters') {
         const number = page(input);
         const query = (input.get('q') ?? '').slice(0, 150).trim();
-        const creator = input.get('creator') || posterSources[0];
+        const creator = input.get('creator') || 'all';
         if (creator !== 'all' && !posterSources.includes(creator)) throw new AppError(400, 'Choose a configured poster source.');
         const creators = creator === 'all' ? posterSources : [creator];
         const full = input.get('full') === '1';
