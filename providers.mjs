@@ -2,7 +2,7 @@ import { gunzipSync } from 'node:zlib';
 
 export const posterSources = [
   'RedHeadJedi', 'ishalioh', 'ashlyfxxk', 'XDM', 'mikenobbs',
-  'DarkMatte', 'DIIIVOY', 'cmanuelg1989', 'KyleKahotek', 'j.zapattack',
+  'DarkMatte', 'DIIIVOY', 'cmanuelg1989', 'KyleKahotek', 'j.zapattack', 'Lafferlaffer',
 ];
 export function galleryUrl(creator) {
   if (!posterSources.includes(creator)) throw new AppError(400, 'Choose a configured ThePosterDB source.');
