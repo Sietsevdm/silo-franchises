@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { galleryUrl, parseGallery, parseTVIndex, parseTVMembers, providers } from './providers.mjs';
-import { eligibleCollection, matchMembers, siloClient } from './silo.mjs';
+import { allowedFranchiseTitle, galleryUrl, parseGallery, parseTVIndex, parseTVMembers, providers } from './providers.mjs';
+import { eligibleCollection, matchMembers, previewKind, siloClient } from './silo.mjs';
 import { publicArtworkUrl } from './remote-artwork.mjs';
 
 test('extracts official lists, franchise members and attributed gallery cards', () => {
@@ -303,4 +303,29 @@ test('opt-in TMDb sync creates a native Silo collection and lets Silo populate i
   assert.equal(result.synced, true);
   assert.deepEqual(calls.slice(-2), [['PUT', '/api/v2/admin/collections/new/poster'], ['POST', '/api/v2/admin/collections/new/sync']]);
   assert.equal(calls.some(([, path]) => path.includes('/items/')), false);
+});
+
+test('browsing excludes configured writing systems and preview limits libraries by type and name', () => {
+  assert.equal(allowedFranchiseTitle('Amélie Collection'), true);
+  for (const title of ['Example 東京', 'スター・ウォーズ', '영화', 'Коллекция']) {
+    assert.equal(allowedFranchiseTitle(title), false);
+  }
+  assert.equal(previewKind({ type: 'movies', name: 'Movies 4K' }), 'movie');
+  assert.equal(previewKind({ type: 'series', name: 'TV Shows - Anime' }), 'series');
+  for (const name of ['Movies - Anime', 'Movies - PPV/Sports', 'Movies - Foreign',
+    'Movies - 4K (Special Editions)', 'Movies - Special Editions']) {
+    assert.equal(previewKind({ type: 'movies', name }), null);
+  }
+  assert.equal(previewKind({ type: 'mixed', name: 'Mixed' }), null);
+});
+
+test('saving A–Z writes Silo’s collection default sort configuration', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    if (options.method === 'GET') return Response.json({ id: '42' }, { headers: { ETag: '"v2"' } });
+    assert.equal(options.method, 'PATCH');
+    assert.deepEqual(JSON.parse(options.body).sort_config, { field: 'title', order: 'asc' });
+    return Response.json({ id: '42' });
+  });
+  const silo = siloClient('https://example.test/', 'fake-silo-key');
+  await silo.updateCollection({ id: '42', title: 'Example', description: '', etag: '"v2"', sort: 'title' });
 });
