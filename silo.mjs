@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, bytes, normalize, request } from './providers.mjs';
 
 export function matchMembers(members, catalog) {
@@ -45,6 +46,36 @@ export function siloClient(base, token) {
     throw new Error('SILO_URL must be an HTTP(S) server URL.');
   }
   const prefix = root.href.replace(/\/$/, '') + '/api/v2';
+  let readQueue = Promise.resolve();
+  let nextRead = 0;
+  const read = async (send) => {
+    const deadline = Date.now() + 20_000;
+    for (let attempt = 0; ; attempt++) {
+      const scheduled = readQueue.then(async () => {
+        if (nextRead > deadline) throw limited(nextRead);
+        const wait = nextRead - Date.now();
+        if (wait > 0) await sleep(wait);
+        nextRead = Date.now() + 150;
+        try { return await send(); }
+        catch (error) {
+          if (error.status !== 429) throw error;
+          const hint = error.retryAfter;
+          const retry = !hint ? NaN : /^\d+$/.test(hint) ? Number(hint) * 1000 : Date.parse(hint) - Date.now();
+          nextRead = Math.max(nextRead, Date.now() + (Number.isFinite(retry) ? Math.max(0, retry) : 1000 * 2 ** attempt));
+          throw limited(nextRead);
+        }
+      });
+      readQueue = scheduled.catch(() => {});
+      try { return await scheduled; }
+      catch (error) {
+        if (error.status !== 429 || attempt >= 3 || nextRead > deadline) throw error;
+      }
+    }
+  };
+  function limited(until) {
+    const seconds = Math.max(1, Math.ceil((until - Date.now()) / 1000));
+    return new AppError(429, `Silo is limiting catalog requests. Wait about ${seconds} second${seconds === 1 ? '' : 's'}, then try the preview again.`, String(seconds));
+  }
   const call = async (path, { method = 'GET', body, etag, withTag = false } = {}) => {
     if (!token) throw new AppError(503, 'Set SILO_API_KEY in the stack to connect to Silo.');
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
@@ -53,26 +84,48 @@ export function siloClient(base, token) {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(body);
     }
-    const response = await request(prefix + path, { method, headers, body }, 'Silo');
+    const send = () => request(prefix + path, { method, headers, body }, 'Silo');
+    const response = method === 'GET' ? await read(send) : await send();
     if (response.status === 204) return null;
     const value = await response.json();
     return withTag ? { value, etag: response.headers.get('etag') } : value;
   };
   const libraries = async () => (await call('/libraries')).items.filter((library) => library.enabled);
-  const catalog = async (ids) => {
+  const inventories = new Map();
+  function loadLibrary(library, type) {
+    const key = JSON.stringify([library, type]);
+    let entry = inventories.get(key);
+    if (!entry || (!entry.pending && entry.expires < Date.now())) {
+      entry = { items: new Map(), seen: new Set(), cursor: null, complete: false, expires: Infinity };
+      inventories.set(key, entry);
+    }
+    if (entry.complete) return Promise.resolve(entry.items);
+    if (entry.pending) return entry.pending;
+    entry.pending = (async () => {
+      do {
+        const query = new URLSearchParams({ library_id: library, type, limit: '200' });
+        if (entry.cursor) query.set('cursor', entry.cursor);
+        const page = await call('/admin/catalog/items?' + query);
+        const cursor = page.page?.next_cursor;
+        if (page.page?.has_more && (!cursor || entry.seen.has(cursor))) throw new AppError(502, 'Silo returned an invalid catalog cursor.');
+        for (const item of page.items) if (item.type === type) entry.items.set(item.content_id, item);
+        entry.cursor = page.page?.has_more ? cursor : null;
+        if (entry.cursor) entry.seen.add(entry.cursor);
+      } while (entry.cursor);
+      entry.complete = true;
+      entry.expires = Date.now() + 120_000;
+      return entry.items;
+    })().catch((error) => {
+      if (error.status === 429) entry.expires = Date.now() + Math.max(120_000, Number(error.retryAfter) * 1000 + 30_000);
+      else inventories.delete(key);
+      throw error;
+    }).finally(() => { entry.pending = null; });
+    return entry.pending;
+  }
+  const catalog = async (ids, type) => {
     const all = new Map();
     for (const library of ids) {
-      const cursors = new Set();
-      let cursor;
-      do {
-        const query = new URLSearchParams({ library_id: library, limit: '200' });
-        if (cursor) query.set('cursor', cursor);
-        const page = await call('/admin/catalog/items?' + query);
-        for (const item of page.items) if (['movie', 'series'].includes(item.type)) all.set(item.content_id, item);
-        cursor = page.page?.next_cursor;
-        if (page.page?.has_more && (!cursor || cursors.has(cursor))) throw new AppError(502, 'Silo returned an invalid catalog cursor.');
-        cursors.add(cursor);
-      } while (cursor);
+      for (const [id, item] of await loadLibrary(library, type)) all.set(id, item);
     }
     return [...all.values()];
   };
