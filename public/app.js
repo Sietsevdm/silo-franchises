@@ -610,12 +610,15 @@ function drawPosterComparison() {
   status('compare-status', posters.length ? posters.length + ' of 3 posters shortlisted.' : '');
   el('compare-posters').replaceChildren(...posters.map((poster) => {
     const card = create('figure');
-    card.append(posterImage(poster), create('figcaption', poster.title + ' · ' + poster.creator),
+    const controls = create('div');
+    controls.className = 'compare-actions';
+    controls.append(
       action('Use poster', () => showPoster(poster)),
       action('Remove', () => {
         state.comparison.delete(poster.id);
         drawPosterComparison();
       }));
+    card.append(posterImage(poster), create('figcaption', poster.title + ' · ' + poster.creator), controls);
     return card;
   }));
 }

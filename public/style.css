@@ -73,7 +73,11 @@ main { width: 100%; }
 .tabs button { background: transparent; }
 .tabs [aria-pressed=true] { border-color: #6279c6; background: #243257; color: #e1e8ff; }
 .search { margin: .85rem 0 .5rem; }
-.search input { flex: 1; min-width: 8rem; }
+.search input { flex: 1; min-width: min(100%, 8rem); }
+.search button, .line button { align-self: center; }
+#membership > .line, #match-search { align-items: end; margin-bottom: .65rem; }
+#membership > .line > label, #match-search > label { display: grid; gap: .35rem; flex: 1 1 9rem; min-width: 0; }
+#membership > .line > button, #match-search > button { align-self: end; }
 .select-bar { display: flex; justify-content: space-between; margin: .85rem 0 .55rem; color: var(--muted); font-size: .9rem; }
 .select-bar label, #backdrop-field, #sync-field { display: flex; align-items: center; gap: .45rem; }
 .check-line { display: flex; align-items: center; gap: .45rem; margin: .6rem 0; color: var(--muted); }
@@ -129,9 +133,9 @@ main { width: 100%; }
 fieldset { border: 1px solid var(--line); border-radius: .65rem; margin: 1rem 0; padding: .75rem; }
 legend { color: var(--muted); padding: 0 .3rem; }
 fieldset label, .match { display: flex; align-items: start; gap: .5rem; padding: .4rem 0; }
-.match { border-bottom: 1px solid var(--line); }
+.match { border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
 .match input[type=checkbox] { margin-top: .18rem; }
-.match-details { min-width: 0; display: grid; gap: .35rem; overflow-wrap: anywhere; }
+.match-details { flex: 1 1 8rem; min-width: 0; display: grid; gap: .35rem; overflow-wrap: anywhere; }
 .match-libraries { display: flex; flex-wrap: wrap; gap: .3rem; }
 .match-libraries > span { padding: .15rem .5rem; border: 1px solid #405076; border-radius: .45rem; background: #202d48; color: #dce5ff; font-size: .8rem; }
 #library-eligibility { padding: .55rem .7rem; background: var(--surface); border-radius: .55rem; font-size: .9rem; }
@@ -151,12 +155,18 @@ fieldset label, .match { display: flex; align-items: start; gap: .5rem; padding:
 .posters img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: .4rem; background: #232f44; }
 .posters small { font-size: .8rem; color: var(--muted); }
 .poster-card { display: grid; grid-template-rows: 1fr auto; gap: .25rem; min-width: 0; }
+.poster-card > button:last-child { text-align: center; }
+#poster-comparison { border-top: 1px solid var(--line); margin-top: 1rem; padding-top: .75rem; }
+#poster-comparison h3 { margin-bottom: .65rem; }
 #compare-posters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: .6rem; }
-#compare-posters figure { margin: 0; min-width: 0; }
+#compare-posters figure { display: grid; grid-template-rows: auto 1fr auto; margin: 0; min-width: 0; }
 #compare-posters img { width: 100%; aspect-ratio: 2 / 3; object-fit: contain; display: block; }
 #compare-posters figcaption { overflow-wrap: anywhere; margin: .35rem 0; }
+.compare-actions { display: grid; gap: .25rem; }
 #collection-health { margin: .65rem 0; }
-#health-rows article { border-top: 1px solid var(--line); padding: .5rem 0; }
+#health-rows article { display: grid; gap: .35rem; justify-items: start; border-top: 1px solid var(--line); padding: .55rem 0; }
+#health-rows article > p { margin: 0; }
+#health-rows .row-title { padding: .15rem 0; }
 
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: 1.15fr 1fr; }
