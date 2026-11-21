@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { galleryUrl, parseGallery, parseTVIndex, parseTVMembers, providers } from './providers.mjs';
-import { matchMembers, siloClient } from './silo.mjs';
+import { eligibleCollection, matchMembers, siloClient } from './silo.mjs';
 
 test('extracts official lists, franchise members and attributed gallery cards', () => {
   assert.equal(parseTVIndex('<h3><a href="/lists/power">Power Franchise</a></h3>')[0].id, 'power');
+  assert.equal(parseTVIndex('<h3><a href="/lists/power">Power Franchise</a></h3><i class="fa fa-star" aria-hidden="true"></i> 1,250')[0].stars, 1250);
   assert.equal(parseTVMembers('<h3 class="mt-0"><a href="/series/power">Power</a></h3>')[0].type, 'series');
   const gallery = parseGallery(`<div class="hovereffect rounded-poster">
   <source srcset="https://images.theposterdb.com/prod/public/images/posters/optimized/collections/1/poster.jpg">
@@ -129,6 +130,47 @@ test('preview attribution shows both libraries for shared items and flags distin
   assert.equal(results[1].basis, 'Ambiguous provider IDs');
   assert.equal(results[1].match, undefined);
   assert.equal(results[3].basis, 'Missing');
+});
+
+test('new collections require two distinct selected titles per library for movies and series', () => {
+  for (const type of ['movie', 'series']) {
+    const members = [
+      { content_id: 'a', type, previewLibraryIds: ['regular', '4k'] },
+      { content_id: 'b', type, previewLibraryIds: ['regular'] },
+      { content_id: 'c', type, previewLibraryIds: ['other'] },
+    ];
+    assert.deepEqual(eligibleCollection(['regular', '4k', 'other'], members), {
+      libraryIds: ['regular'], skipped: ['4k', 'other'], members: members.slice(0, 2),
+    });
+    assert.deepEqual(eligibleCollection(['regular', '4k'], [members[0], members[0]]).libraryIds, []);
+  }
+});
+
+test('editing a manual collection appends only new items from its libraries', async (t) => {
+  const writes = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const path = new URL(url).pathname;
+    if (options.method === 'GET' && path.endsWith('/items')) {
+      return Response.json({ items: [{ media_item_id: 'old', position: 4 }] });
+    }
+    if (options.method === 'GET') {
+      return Response.json({ id: '42', collection_type: 'manual', library_ids: ['regular'] }, { headers: { ETag: '"v2"' } });
+    }
+    writes.push([options.method, path, JSON.parse(options.body)]);
+    return options.method === 'PUT' ? new Response(null, { status: 204 }) : Response.json({ id: '42' });
+  });
+  const silo = siloClient('https://example.test/', 'fake-silo-key');
+  const input = { id: '42', etag: '"v2"', title: 'Example', description: '' };
+  await assert.rejects(silo.updateCollection({ ...input, members: [{ content_id: 'foreign', previewLibraryIds: ['4k'] }] }), { status: 422 });
+  const result = await silo.updateCollection({ ...input, members: [
+    { content_id: 'old', previewLibraryIds: ['regular'] },
+    { content_id: 'new', previewLibraryIds: ['regular'] },
+  ] });
+  assert.equal(result.added, 1);
+  assert.deepEqual(writes.map(([method, path]) => [method, path]), [
+    ['PATCH', '/api/v2/admin/collections/42'], ['PUT', '/api/v2/admin/collections/42/items/new'],
+  ]);
+  assert.equal(writes[1][2].position, 5);
 });
 
 test('poster selections stay bound to their allowlisted creator', async (t) => {
