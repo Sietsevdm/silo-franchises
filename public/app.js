@@ -59,6 +59,7 @@ function drawRows() {
       box.setAttribute('aria-label', 'Select ' + item.title);
       box.disabled = Boolean(existing.length) || state.busy;
       row.append(box, action(item.title, () => openFranchise(item), 'row-title'));
+      row.classList.toggle('active', !!state.current && itemKey(state.current) === key);
       for (const collection of existing) {
         const edit = action('In Silo · Edit', () => openExisting(collection), 'edit');
         edit.title = collection.title;
@@ -109,7 +110,18 @@ function openPanel(title, editing) {
   el('selection').hidden = false;
   el('poster-tools').hidden = false;
   el('membership').hidden = editing;
-  el('description-field').hidden = !editing;
+  el('description-field').hidden = false;
+  el('description').value = '';
+  state.descriptionDirty = false;
+  state.metadataLoaded = false;
+  state.metadataRun = null;
+  el('tmdb-backdrop').hidden = true;
+  el('tmdb-backdrop').removeAttribute('src');
+  el('metadata-source').hidden = true;
+  el('backdrop-field').hidden = true;
+  el('include-backdrop').checked = true;
+  status('metadata-status', '');
+  status('selection-title', title);
   el('queue-current').hidden = editing;
   el('publish').textContent = editing ? 'Save changes' : 'Add to Silo';
   el('collection-title').value = title;
@@ -130,12 +142,43 @@ async function openFranchise(item) {
     for (const check of el('libraries').querySelectorAll('input')) check.checked = draft.libraryIds.includes(check.value);
     renderMatches(draft.matches, draft.contentIds);
     showPoster(draft.poster);
+    if (draft.description != null) {
+      el('description').value = draft.description;
+      state.descriptionDirty = true;
+    }
+    el('include-backdrop').checked = draft.includeBackdrop !== false;
   }
   el('source-link').href = item.url;
   el('source-link').hidden = false;
   const existing = matchesFor(item);
   status('detail-status', existing.length ? 'A matching collection already exists. Use its Edit button in the list.' : 'Choose libraries, then preview the matching titles.');
+  drawRows();
+  void loadMetadata(item);
   updateActions();
+}
+
+async function loadMetadata(item) {
+  const run = state.metadataRun = Symbol();
+  status('metadata-status', 'Loading TMDb description and backdrop…');
+  try {
+    const metadata = await api('metadata?' + params({ provider: item.provider, id: item.id, kind }));
+    if (state.metadataRun !== run) return;
+    if (!metadata) { status('metadata-status', 'No matching TMDb artwork or description found.'); return; }
+    state.metadataLoaded = true;
+    if (!state.descriptionDirty) el('description').value = metadata.description.slice(0, 8000);
+    if (metadata.backdrop) {
+      el('tmdb-backdrop').src = metadata.backdrop;
+      el('tmdb-backdrop').hidden = false;
+      el('backdrop-field').hidden = false;
+    }
+    const link = el('metadata-source');
+    link.href = metadata.url;
+    link.textContent = metadata.kind === 'related' ? `TMDb metadata from ${metadata.title}` : 'Description and backdrop from TMDb';
+    link.hidden = false;
+    status('metadata-status', '');
+  } catch (error) {
+    if (state.metadataRun === run) status('metadata-status', error.message);
+  }
 }
 
 async function openExisting(item) {
@@ -263,11 +306,14 @@ async function listPosters(reset) {
 
 function draftFor(item) {
   return { ...requestFor(item, checked('libraries')), title: el('collection-title').value, poster: state.poster,
-    contentIds: checked('matches'), matches: state.matches };
+    contentIds: checked('matches'), matches: state.matches,
+    description: state.descriptionDirty || state.metadataLoaded ? el('description').value : undefined,
+    includeBackdrop: el('include-backdrop').checked };
 }
 const ready = (draft) => !!(draft?.poster && draft?.contentIds.length && draft?.libraryIds.length);
 const importDraft = (draft) => post('import', { provider: draft.provider, id: draft.id, kind: draft.kind,
-  libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, posterId: draft.poster.id, posterCreator: draft.poster.creator });
+  libraryIds: draft.libraryIds, title: draft.title, contentIds: draft.contentIds, posterId: draft.poster.id,
+  posterCreator: draft.poster.creator, description: draft.description, includeBackdrop: draft.includeBackdrop });
 
 function drawQueue() {
   const available = state.rows.filter((item) => item.provider !== 'silo' && !matchesFor(item).length);
@@ -353,12 +399,14 @@ el('import-bulk').onclick = async () => {
   updateActions();
   let imported = 0;
   let failed = 0;
+  let warnings = 0;
   for (const [key] of state.selected) {
     const draft = state.drafts.get(key);
     if (!ready(draft)) continue;
     status('bulk-status', `Importing ${draft.title}…`);
     try {
-      await importDraft(draft);
+      const result = await importDraft(draft);
+      if (result.warning) warnings++;
       state.selected.delete(key);
       state.drafts.delete(key);
       imported++;
@@ -368,7 +416,7 @@ el('import-bulk').onclick = async () => {
   state.busy = false;
   drawRows();
   updateActions();
-  status('bulk-status', `${imported} imported${failed ? `, ${failed} failed. See the queue for details.` : '.'}`);
+  status('bulk-status', `${imported} imported. ${failed ? `${failed} failed. See the queue for details. ` : ''}${warnings ? `${warnings} imported with incomplete TMDb metadata.` : ''}`.trim());
 };
 
 el('publish').onclick = async () => {
@@ -389,7 +437,7 @@ el('publish').onclick = async () => {
       state.editing = await api('collection?' + params({ id: editing.id }));
       showPoster(null);
     }
-    if ((item && item === state.current) || (editing && editing.id === state.editing?.id)) status('publish-status', `Saved “${result.title}” in Silo.`);
+    if ((item && item === state.current) || (editing && editing.id === state.editing?.id)) status('publish-status', result.warning ?? `Saved “${result.title}” in Silo.`);
   } catch (error) { status('publish-status', error.message); }
   finally { state.busy = false; drawRows(); updateActions(); }
 };
@@ -400,7 +448,8 @@ el('more-posters').onclick = () => { state.posterPage++; listPosters(false); };
 el('more-franchises').onclick = () => { state.page++; listFranchises(false); };
 el('poster-form').onsubmit = (event) => { event.preventDefault(); listPosters(true); };
 el('franchise-form').onsubmit = (event) => { event.preventDefault(); listFranchises(true); };
-el('collection-title').oninput = updateActions;
+el('collection-title').oninput = () => { status('selection-title', el('collection-title').value || 'Your collection'); updateActions(); };
+el('description').oninput = () => { state.descriptionDirty = true; };
 for (const button of document.querySelectorAll('[data-provider]')) {
   button.hidden = kind === 'series' && button.dataset.provider === 'tmdb';
   button.setAttribute('aria-pressed', String(button.dataset.provider === state.provider));
