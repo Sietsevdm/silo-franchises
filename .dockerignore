@@ -6,5 +6,6 @@
 !remote-artwork.mjs
 !poster-cache.mjs
 !app-state.mjs
+!mdblist.mjs
 !public/
 !public/**
