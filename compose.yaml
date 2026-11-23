@@ -14,6 +14,7 @@ services:
       SILO_REQUEST_API_KEY: "${SILO_REQUEST_API_KEY:-}"
       SILO_REQUEST_PROFILE_ID: "${SILO_REQUEST_PROFILE_ID:-}"
       TMDB_READ_TOKEN: "${TMDB_READ_TOKEN:?Set TMDB_READ_TOKEN}"
+      MDBLIST_API_KEY: "${MDBLIST_API_KEY:-}"
       POSTER_INDEX_DIR: /poster-data
     volumes:
       - poster-index:/poster-data

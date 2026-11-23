@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mdblistClient } from './mdblist.mjs';
 import { allowedFranchiseTitle, galleryUrl, parseGallery, parseTVIndex, parseTVListTitles, parseTVMembers, providers } from './providers.mjs';
 import { eligibleCollection, libraryKind, matchMembers, previewKind, selectedLibraryKind, siloClient } from './silo.mjs';
 import { publicArtworkUrl } from './remote-artwork.mjs';
@@ -9,6 +10,29 @@ import { join } from 'node:path';
 import { posterCache } from './poster-cache.mjs';
 import { appState } from './app-state.mjs';
 
+test('MDBList searches public lists and reads mixed titles across pages', async (t) => {
+  const offsets = [];
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.equal(url.origin, 'https://api.mdblist.com');
+    assert.equal(url.searchParams.get('apikey'), 'example-key');
+    if (url.pathname === '/lists/search') {
+      assert.equal(url.searchParams.get('query'), 'Family films');
+      return Response.json([{ id: 42, name: 'Family films', user_name: 'example', items: 2 }]);
+    }
+    assert.equal(url.pathname, '/lists/42/items');
+    assert.equal(url.searchParams.get('unified'), 'true');
+    const offset = url.searchParams.get('offset');
+    offsets.push(offset);
+    return offset === '0'
+      ? Response.json([{ title: 'Film', mediatype: 'movie', release_year: 1999, id: 11 }], { headers: { 'X-Has-More': 'true' } })
+      : Response.json([{ title: 'Show', mediatype: 'show', release_year: 2001, ids: { tvdb: 22, tmdb: 33 } }]);
+  });
+  const client = mdblistClient('example-key');
+  assert.deepEqual(await client.search('Family films'), [{ id: 42, name: 'Family films', owner: 'example', count: 2 }]);
+  const members = await client.members(42);
+  assert.deepEqual(offsets, ['0', '1000']);
+  assert.deepEqual(members.map(({ type, tmdb, tvdb }) => [type, tmdb, tvdb]), [['movie', 11, undefined], ['series', 33, 22]]);
+});
 test('server drafts survive restart and per-queue edits serialize', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'franchise-state-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

@@ -20,6 +20,15 @@
     <h1>Custom collection</h1>
     <section class="panel custom-panel" aria-labelledby="titles-heading">
       <h2 id="titles-heading">Find titles</h2>
+      <details class="custom-artwork">
+        <summary>Search MDBList</summary>
+        <form id="mdblist-search" class="search">
+          <input name="query" type="search" aria-label="MDBList list name" placeholder="Search public MDBList lists" maxlength="150" required>
+          <button>Search lists</button>
+        </form>
+        <p id="mdblist-status" role="status"></p>
+        <div id="mdblist-results"></div>
+      </details>
       <fieldset id="libraries"><legend>Silo libraries</legend>
         <p class="field-note">The collection will appear in the selected libraries.</p>
       </fieldset>

@@ -6,8 +6,10 @@ import { eligibleCollection, imageType, libraryKind, matchMembers, previewKind, 
 import { downloadPublicArtwork, publicArtworkUrl } from './remote-artwork.mjs';
 import { posterCache } from './poster-cache.mjs';
 import { appState } from './app-state.mjs';
+import { mdblistClient } from './mdblist.mjs';
 
 const env = process.env;
+const mdblist = mdblistClient(env.MDBLIST_API_KEY?.trim());
 if (!env.APP_PASSWORD || env.APP_PASSWORD.length < 16) throw new Error('Set APP_PASSWORD to at least 16 characters.');
 if (!env.SILO_URL) throw new Error('Set SILO_URL to your Silo server address.');
 const username = env.APP_USER || 'admin';
@@ -216,12 +218,12 @@ async function selectedPoster(data, required = false) {
   if (required) throw new AppError(400, 'Choose a poster or enter a poster URL.');
 }
 
-async function customCatalog(ids) {
+async function customCatalog(ids, libraries) {
   const libraryIds = [...new Set(ids)];
-  if (!libraryIds.length || libraryIds.length > 20 || libraryIds.some((id) => typeof id !== 'string' || !id)) {
-    throw new AppError(400, 'Select between 1 and 20 movie or TV libraries.');
+  if (libraryIds.some((id) => typeof id !== 'string' || !id)) {
+    throw new AppError(400, 'Select enabled movie or TV libraries.');
   }
-  const libraries = await silo.libraries();
+  libraries ??= await silo.libraries();
   const groups = { movie: [], series: [] };
   for (const id of libraryIds) {
     const library = libraries.find((item) => item.id === id);
@@ -231,6 +233,35 @@ async function customCatalog(ids) {
   }
   const catalogs = await Promise.all(Object.entries(groups).map(([kind, ids]) => silo.catalog(ids, kind)));
   return { libraryIds, items: catalogs.flat() };
+}
+
+const customTitle = (item) => ({
+  id: item.content_id, title: item.title, year: item.year, type: item.type, libraryIds: item.previewLibraryIds,
+});
+
+async function matchMdbList(id) {
+  const members = await mdblist.members(id);
+  const libraries = (await silo.libraries()).filter(libraryKind);
+  const { items } = await customCatalog(libraries.map((library) => library.id), libraries);
+  const matches = new Map();
+  const found = new Set();
+  for (const library of libraries) {
+    const inventory = items.filter((item) => item.previewLibraryIds.includes(library.id));
+    matchMembers(members, inventory).forEach(({ match }, index) => {
+      if (!match) return;
+      found.add(index);
+      const existing = matches.get(match.content_id);
+      if (existing) existing.libraryIds.push(library.id);
+      else matches.set(match.content_id, { ...customTitle(match), libraryIds: [library.id], index });
+    });
+  }
+  const ordered = [...matches.values()].sort((a, b) => a.index - b.index);
+  return {
+    items: ordered.map(({ index, ...item }) => item),
+    libraryIds: [...new Set(ordered.flatMap((item) => item.libraryIds))],
+    matched: found.size,
+    total: members.length,
+  };
 }
 
 async function selectedBackdrop(data) {
@@ -301,15 +332,24 @@ createServer(async (req, res) => {
         .map((library) => ({ id: library.id, name: library.name, type: library.type,
           mediaKind: libraryKind(library), previewKind: previewKind(library) })));
       if (path === '/api/settings') return send(res, 200, await state.get('settings', 'libraries') ?? { libraryIds: null });
+      if (path === '/api/mdblist-search') {
+        const query = input.get('q')?.trim();
+        if (!query || query.length > 150) throw new AppError(400, 'Enter an MDBList list name.');
+        return send(res, 200, await mdblist.search(query));
+      }
+      if (path === '/api/mdblist-matches') {
+        const id = input.get('id');
+        if (!/^[1-9]\d{0,14}$/.test(id ?? '')) throw new AppError(400, 'Choose an MDBList search result.');
+        return send(res, 200, await matchMdbList(id));
+      }
       if (path === '/api/custom-titles') {
         const query = input.get('q')?.trim().toLowerCase();
         if (!query || query.length > 150) throw new AppError(400, 'Enter a title to search for.');
+        if (!input.getAll('library').length) throw new AppError(400, 'Select at least one library.');
         const { items } = await customCatalog(input.getAll('library'));
         const matches = items.filter((item) => item.title?.toLowerCase().includes(query));
         matches.sort((a, b) => a.title.localeCompare(b.title) || (a.year ?? 0) - (b.year ?? 0));
-        return send(res, 200, { total: matches.length, items: matches.slice(0, 50).map((item) => ({
-          id: item.content_id, title: item.title, year: item.year, type: item.type, libraryIds: item.previewLibraryIds,
-        })) });
+        return send(res, 200, { total: matches.length, items: matches.slice(0, 50).map(customTitle) });
       }
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
       if (path === '/api/drafts') return send(res, 200, await state.get('drafts', queueKind(input.get('kind'))) ?? { revision: 0 });
@@ -563,7 +603,7 @@ createServer(async (req, res) => {
     if (req.method === 'POST' && path === '/api/custom-collection') {
       const data = await body(req);
       const title = typeof data.title === 'string' ? data.title.trim() : '';
-      if (!title || title.length > 150 || !Array.isArray(data.libraryIds) ||
+      if (!title || title.length > 150 || !Array.isArray(data.libraryIds) || !data.libraryIds.length ||
         !Array.isArray(data.contentIds) || !data.contentIds.length || data.contentIds.length > 200 ||
         data.contentIds.some((id) => typeof id !== 'string' || !id) ||
         (data.description != null && (typeof data.description !== 'string' || data.description.length > 8000))) {
