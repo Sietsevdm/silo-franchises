@@ -74,6 +74,7 @@ main { width: 100%; }
 .custom-results span, .custom-selected-label { overflow-wrap: anywhere; }
 .custom-panel ol { padding-inline-start: 1.5rem; }
 .custom-panel li + li { margin-top: .55rem; }
+#mdblist-results { display: grid; gap: .55rem; }
 .custom-selected-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: .65rem; }
 .custom-selected-row button { min-height: 2.25rem; }
 .custom-title-meta { display: block; margin-top: .15rem; font-size: .85rem; color: var(--muted); }
