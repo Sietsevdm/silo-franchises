@@ -6,6 +6,12 @@ const selected = document.querySelector('#selected');
 const searchStatus = document.querySelector('#search-status');
 const publishStatus = document.querySelector('#publish-status');
 const createButton = document.querySelector('#create-custom');
+const queueButton = document.querySelector('#queue-custom');
+const bulkPanel = document.querySelector('#custom-queue');
+const bulkItems = document.querySelector('#custom-queue-items');
+const bulkStatus = document.querySelector('#custom-queue-status');
+const bulkPublish = document.querySelector('#publish-custom-queue');
+const selectResults = document.querySelector('#select-custom-results');
 const posterSearch = document.querySelector('#custom-poster-search');
 const posterSource = document.querySelector('#custom-poster-source');
 const posterResults = document.querySelector('#custom-posters');
@@ -15,16 +21,43 @@ const morePosters = document.querySelector('#more-custom-posters');
 const posterUrl = publish.elements.posterUrl;
 const names = new Map();
 const picks = new Map();
+const queueKey = 'silo-custom-collection-queue';
 let searchVersion = 0;
 let publishing = false;
 let selectedPoster;
 let posterRun;
+let titleResults = [];
+let queue = readQueue();
+let editing;
+let librariesReady = false;
 
 async function api(path, options) {
   const response = await fetch('/api/' + path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error);
+  if (!response.ok) throw Object.assign(new Error(data.error || 'The request failed.'), { status: response.status });
   return data;
+}
+
+const createCollection = (payload) => api('custom-collection', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Franchise-App': '1' },
+  body: JSON.stringify(payload),
+});
+
+function readQueue() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(queueKey));
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+}
+
+function updateQueue(change) {
+  const next = change(readQueue());
+  localStorage.setItem(queueKey, JSON.stringify(next));
+  queue = next;
+  renderQueue();
 }
 
 function libraryIds() {
@@ -67,6 +100,10 @@ function renderSelection() {
     checkbox.disabled = publishing || (!checkbox.checked && picks.size >= 200);
   }
   createButton.disabled = publishing || !picks.size;
+  queueButton.disabled = createButton.disabled;
+  queueButton.textContent = editing ? 'Update queued collection' : 'Add to bulk queue';
+  selectResults.hidden = !titleResults.length;
+  selectResults.disabled = publishing || picks.size >= 200 || titleResults.every((item) => picks.has(item.id));
 }
 
 function choosePoster(poster) {
@@ -157,6 +194,7 @@ libraries.addEventListener('change', () => {
   const ids = libraryIds();
   search.querySelector('button').disabled = !ids.length;
   results.replaceChildren();
+  titleResults = [];
   let removed = 0;
   for (const [id, item] of picks) {
     if (item.libraryIds.some((library) => ids.includes(library))) continue;
@@ -167,16 +205,31 @@ libraries.addEventListener('change', () => {
   renderSelection();
 });
 
+selectResults.onclick = () => {
+  for (const item of titleResults) {
+    if (picks.size >= 200) break;
+    picks.set(item.id, item);
+  }
+  renderSelection();
+};
+
 search.addEventListener('submit', async (event) => {
   event.preventDefault();
+  const query = search.elements.query.value.trim();
+  if (!query || !libraryIds().length) return;
   const version = ++searchVersion;
-  const params = new URLSearchParams({ q: search.elements.query.value });
+  const params = new URLSearchParams({ q: query });
   for (const id of libraryIds()) params.append('library', id);
+  posterSearch.elements.query.value = query;
+  searchPosters();
   results.replaceChildren();
+  titleResults = [];
+  renderSelection();
   searchStatus.textContent = 'Searching Silo…';
   try {
     const data = await api('custom-titles?' + params);
     if (version !== searchVersion) return;
+    titleResults = data.items;
     for (const item of data.items) {
       const label = document.createElement('label');
       label.className = 'check-line';
@@ -200,35 +253,169 @@ search.addEventListener('submit', async (event) => {
   }
 });
 
-publish.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (publishing || !picks.size) return;
+function collectionPayload() {
   const fields = Object.fromEntries(new FormData(publish));
+  fields.title = fields.title.trim();
+  if (!fields.title) throw new Error('Enter a collection name.');
+  const ids = libraryIds();
+  if (!ids.length || ids.length > 20) throw new Error('Select between 1 and 20 libraries.');
   if (!fields.posterUrl.trim()) delete fields.posterUrl;
   if (selectedPoster) {
     fields.posterId = selectedPoster.id;
     fields.posterCreator = selectedPoster.creator;
   }
-  publishing = true;
-  libraries.disabled = true;
+  return { ...fields, libraryIds: ids, contentIds: [...picks.keys()] };
+}
+
+function clearEditor() {
+  editing = undefined;
+  publish.reset();
+  choosePoster();
+  picks.clear();
   renderSelection();
+}
+
+function setPublishing(value) {
+  publishing = value;
+  libraries.disabled = value;
+  renderSelection();
+  renderQueue();
+}
+
+function openDraft(draft) {
+  const { payload } = draft;
+  editing = draft.id;
+  for (const checkbox of libraries.querySelectorAll('input')) {
+    checkbox.checked = payload.libraryIds.includes(checkbox.value);
+  }
+  libraries.dispatchEvent(new Event('change'));
+  picks.clear();
+  const ids = libraryIds();
+  for (const item of draft.items) {
+    if (item.libraryIds.some((id) => ids.includes(id))) picks.set(item.id, item);
+  }
+  publish.elements.title.value = payload.title;
+  publish.elements.description.value = payload.description;
+  choosePoster(draft.poster);
+  posterUrl.value = payload.posterUrl ?? '';
+  publishStatus.textContent = 'Editing “' + payload.title + '”.';
+  if (picks.size < draft.items.length) publishStatus.textContent += ' Some titles belong to libraries that are no longer available.';
+  renderSelection();
+  publish.elements.title.focus();
+}
+
+function renderQueue() {
+  bulkPanel.hidden = !queue.length && !bulkStatus.textContent;
+  bulkPublish.disabled = publishing || !queue.length;
+  bulkItems.replaceChildren();
+  for (const draft of queue) {
+    const row = document.createElement('li');
+    const content = document.createElement('div');
+    content.className = 'custom-selected-row';
+    const label = document.createElement('span');
+    label.className = 'custom-selected-label';
+    label.textContent = draft.payload.title;
+    const detail = document.createElement('small');
+    detail.className = 'custom-title-meta';
+    detail.textContent = draft.payload.contentIds.length + ' titles' + (draft.error ? ' · ' + draft.error : '');
+    label.append(detail);
+    const actions = document.createElement('div');
+    actions.className = 'line';
+    for (const [name, action] of [
+      ['Edit', () => openDraft(draft)],
+      ['Remove', () => {
+        try {
+          updateQueue((items) => items.filter((item) => item.id !== draft.id));
+          if (editing === draft.id) {
+            editing = undefined;
+            renderSelection();
+          }
+        } catch (error) { bulkStatus.textContent = error.message; }
+      }],
+    ]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = name;
+      button.setAttribute('aria-label', name + ' ' + draft.payload.title);
+      button.disabled = publishing || (name === 'Edit' && !librariesReady);
+      button.onclick = action;
+      actions.append(button);
+    }
+    content.append(label, actions);
+    row.append(content);
+    bulkItems.append(row);
+  }
+}
+
+bulkPublish.onclick = async () => {
+  if (publishing) return;
+  const pending = [...queue];
+  let completed = 0;
+  setPublishing(true);
+  try {
+    for (const [index, draft] of pending.entries()) {
+      bulkStatus.textContent = 'Publishing ' + (index + 1) + ' of ' + pending.length + ' · ' + draft.payload.title;
+      try {
+        await createCollection(draft.payload);
+      } catch (error) {
+        updateQueue((items) => items.map((item) => item.id === draft.id ? { ...item, error: error.message } : item));
+        if (error.status === 429) break;
+        continue;
+      }
+      updateQueue((items) => items.filter((item) => item.id !== draft.id));
+      if (editing === draft.id) {
+        editing = undefined;
+        renderSelection();
+      }
+      completed++;
+    }
+    bulkStatus.textContent = 'Published ' + completed + ' of ' + pending.length + ' collections.'
+      + (queue.length ? ' Remaining collections are still queued.' : '');
+  } catch (error) {
+    bulkStatus.textContent = error.message;
+  } finally {
+    setPublishing(false);
+  }
+};
+
+window.addEventListener('storage', (event) => {
+  if (event.key !== queueKey) return;
+  queue = readQueue();
+  renderQueue();
+});
+
+publish.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (publishing || !picks.size) return;
+  let payload;
+  try {
+    payload = collectionPayload();
+    if (event.submitter === queueButton) {
+      const draft = { id: editing ?? crypto.randomUUID(), payload, items: [...picks.values()], poster: selectedPoster };
+      updateQueue((items) => {
+        const index = items.findIndex((item) => item.id === draft.id);
+        if (index >= 0) return items.map((item) => item.id === draft.id ? draft : item);
+        return [...items, draft];
+      });
+      clearEditor();
+      publishStatus.textContent = 'Queued “' + payload.title + '”.';
+      return;
+    }
+  } catch (error) {
+    publishStatus.textContent = error.message;
+    return;
+  }
+  setPublishing(true);
   publishStatus.textContent = 'Creating collection in Silo…';
   try {
-    const result = await api('custom-collection', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...fields, libraryIds: libraryIds(), contentIds: [...picks.keys()] }),
-    });
-    publish.reset();
-    choosePoster();
-    picks.clear();
+    const result = await createCollection(payload);
+    if (editing) updateQueue((items) => items.filter((item) => item.id !== editing));
+    clearEditor();
     publishStatus.textContent = 'Created “' + result.title + '” with ' + result.added + ' titles. Open Collections in a selected Silo library to find it.';
   } catch (error) {
     publishStatus.textContent = error.message;
   } finally {
-    publishing = false;
-    libraries.disabled = false;
-    renderSelection();
+    setPublishing(false);
   }
 });
 
@@ -245,6 +432,8 @@ async function loadLibraries() {
       libraries.append(label);
     }
     if (!available.length) searchStatus.textContent = 'No enabled movie or TV libraries were found.';
+    librariesReady = true;
+    renderQueue();
   } catch (error) {
     searchStatus.textContent = error.message;
   }
@@ -260,3 +449,4 @@ async function loadPosterSources() {
 
 void loadLibraries();
 void loadPosterSources();
+renderQueue();

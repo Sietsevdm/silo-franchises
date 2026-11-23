@@ -28,6 +28,7 @@
         <button disabled>Search</button>
       </form>
       <p id="search-status" role="status"></p>
+      <button type="button" id="select-custom-results" hidden>Select all results</button>
       <div id="results" class="custom-results"></div>
     </section>
     <section class="panel custom-panel" aria-labelledby="details-title">
@@ -58,8 +59,17 @@
         <button type="button" id="more-custom-posters" hidden>Load more</button>
         <label class="field">Public HTTPS poster URL (optional)<input form="publish" name="posterUrl" type="url" maxlength="2048" placeholder="https://…"></label>
       </section>
-      <button class="accent" id="create-custom" form="publish" disabled>Create in Silo</button>
+      <div class="line">
+        <button class="accent" id="create-custom" form="publish" disabled>Create in Silo</button>
+        <button id="queue-custom" form="publish" disabled>Add to bulk queue</button>
+      </div>
       <p id="publish-status" role="status"></p>
+    </section>
+    <section id="custom-queue" class="panel custom-panel" aria-labelledby="custom-queue-heading" hidden>
+      <h2 id="custom-queue-heading">Custom collection bulk queue</h2>
+      <ol id="custom-queue-items"></ol>
+      <button class="accent" id="publish-custom-queue" type="button" disabled>Publish queued collections</button>
+      <p id="custom-queue-status" role="status"></p>
     </section>
   </main>
 </body>
