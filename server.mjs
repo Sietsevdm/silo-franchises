@@ -385,6 +385,7 @@ createServer(async (req, res) => {
         if (input.get('kind') !== 'movie') throw new AppError(400, 'TMDb backdrop choices are available for movie franchises.');
         return send(res, 200, await source.backdrops(key(input.get('provider'), input.get('id'), 'movie')));
       }
+      if (path === '/api/poster-sources') return send(res, 200, posterSources);
       if (path === '/api/posters') {
         const number = page(input);
         const query = (input.get('q') ?? '').slice(0, 150).trim();
