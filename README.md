@@ -35,6 +35,8 @@ The screenshots use fictional collections, libraries, and artwork.
 3. Choose an `APP_PASSWORD` of at least 16 characters. `APP_USER` defaults to `admin`. For local Compose, copy `.env.example` to `.env` and fill in the values before starting.
 4. Use an existing Docker network named `proxy`, or create it with `docker network create proxy`. Deploy the stack or run `docker compose up --build -d`. The app binds to `127.0.0.1:8088` by default. An HTTPS reverse proxy on the `proxy` network can forward to `silo-franchises:8080`.
 
+Set the optional `MDBLIST_API_KEY` environment variable to enable **Search MDBList** in the custom collection editor. Choosing a public list finds matching titles across the enabled movie and TV libraries and selects the libraries that contain matches.
+
 The `poster-index` volume stores artwork indexes, drafts, settings, and history. For requests, enable Silo Requests and configure fulfillment in Silo. Set `SILO_REQUEST_API_KEY` to a profile-bound key with the `requests` scope if the collection key lacks permission.
 
 ## License
