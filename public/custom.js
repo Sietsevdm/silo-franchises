@@ -243,7 +243,9 @@ async function useMdbList(list) {
   const editorVersion = searchVersion;
   mdbStatus.textContent = 'Matching “' + list.name + '” across your libraries…';
   try {
-    const data = await api('mdblist-matches?' + new URLSearchParams({ id: list.id }));
+    const params = new URLSearchParams();
+    for (const id of list.ids ?? [list.id]) params.append('id', id);
+    const data = await api('mdblist-matches?' + params);
     if (version !== mdbVersion) return;
     if (editorVersion !== searchVersion || publishing) {
       mdbStatus.textContent = 'The editor changed during matching. Choose the list again to apply it.';
