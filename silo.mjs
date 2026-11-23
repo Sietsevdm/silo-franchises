@@ -372,7 +372,7 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
     active.add(slug);
     let collection;
     try {
-      const form = await prepareArtwork(poster.image, 'Poster artwork', poster.custom);
+      const form = poster ? await prepareArtwork(poster.image, 'Poster artwork', poster.custom) : null;
       const customForm = customBackdrop ? await prepareArtwork(backdrop, 'Backdrop', true) : null;
       collection = await existingImport(title, libraryIds, slug);
       if (!collection) {
@@ -390,7 +390,7 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
           await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position } });
         }
       }
-      await call(path + '/poster', { method: 'PUT', body: form });
+      if (form) await call(path + '/poster', { method: 'PUT', body: form });
       let warning;
       if (backdrop) {
         try {

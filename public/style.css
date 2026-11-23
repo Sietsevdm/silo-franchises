@@ -56,6 +56,13 @@ main { width: 100%; }
 .workspace {
   min-height: calc(100dvh - 4.4rem);
 }
+.custom-workspace {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+  max-width: 78rem;
+  margin-inline: auto;
+}
+.custom-workspace li { margin-block: .5rem; }
 .panel { min-width: 0; padding: clamp(.95rem, 2vw, 2rem); }
 .browse, .artwork { background: var(--panel); }
 .browse { border-right: 1px solid var(--line); }
