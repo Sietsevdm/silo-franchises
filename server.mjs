@@ -98,6 +98,7 @@ const publicCollection = (item) => ({
 const assets = new Map(await Promise.all([
   ...['/', '/movies', '/tv', '/bulk', '/bulk/movies', '/bulk/tv', '/settings'].map((path) => [path, 'index.html', 'text/html']),
   ['/style.css', 'style.css', 'text/css'], ['/app.js', 'app.js', 'text/javascript'],
+  ['/custom', 'custom.html', 'text/html'], ['/custom.js', 'custom.js', 'text/javascript'],
 ].map(async ([path, name, mime]) => [path, { body: await readFile(new URL('./public/' + name, import.meta.url)), mime }])));
 
 function send(res, status, value, mime = 'application/json') {
@@ -215,6 +216,23 @@ async function selectedPoster(data, required = false) {
   if (required) throw new AppError(400, 'Choose a poster or enter a poster URL.');
 }
 
+async function customCatalog(ids) {
+  const libraryIds = [...new Set(ids)];
+  if (!libraryIds.length || libraryIds.length > 20 || libraryIds.some((id) => typeof id !== 'string' || !id)) {
+    throw new AppError(400, 'Select between 1 and 20 movie or TV libraries.');
+  }
+  const libraries = await silo.libraries();
+  const groups = { movie: [], series: [] };
+  for (const id of libraryIds) {
+    const library = libraries.find((item) => item.id === id);
+    const kind = library && libraryKind(library);
+    if (!kind) throw new AppError(400, 'Choose enabled movie or TV libraries.');
+    groups[kind].push(id);
+  }
+  const catalogs = await Promise.all(Object.entries(groups).map(([kind, ids]) => silo.catalog(ids, kind)));
+  return { libraryIds, items: catalogs.flat() };
+}
+
 async function selectedBackdrop(data) {
   if (data.kind === 'series' && data.backdropUrl != null) {
     if (typeof data.backdropUrl !== 'string' || data.backdropUrl.length > 2048) throw new AppError(400, 'Enter a direct public HTTPS image URL.');
@@ -283,6 +301,16 @@ createServer(async (req, res) => {
         .map((library) => ({ id: library.id, name: library.name, type: library.type,
           mediaKind: libraryKind(library), previewKind: previewKind(library) })));
       if (path === '/api/settings') return send(res, 200, await state.get('settings', 'libraries') ?? { libraryIds: null });
+      if (path === '/api/custom-titles') {
+        const query = input.get('q')?.trim().toLowerCase();
+        if (!query || query.length > 150) throw new AppError(400, 'Enter a title to search for.');
+        const { items } = await customCatalog(input.getAll('library'));
+        const matches = items.filter((item) => item.title?.toLowerCase().includes(query));
+        matches.sort((a, b) => a.title.localeCompare(b.title) || (a.year ?? 0) - (b.year ?? 0));
+        return send(res, 200, { total: matches.length, items: matches.slice(0, 50).map((item) => ({
+          id: item.content_id, title: item.title, year: item.year, type: item.type, libraryIds: item.previewLibraryIds,
+        })) });
+      }
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
       if (path === '/api/drafts') return send(res, 200, await state.get('drafts', queueKind(input.get('kind'))) ?? { revision: 0 });
       if (path === '/api/hidden-franchises') return send(res, 200, await state.get('hidden', queueKind(input.get('kind'))) ?? []);
@@ -530,6 +558,26 @@ createServer(async (req, res) => {
         }
       });
       return send(res, 200, { ...publicCollection(updated), added: updated.added });
+    }
+    if (req.method === 'POST' && path === '/api/custom-collection') {
+      const data = await body(req);
+      const title = typeof data.title === 'string' ? data.title.trim() : '';
+      if (!title || title.length > 150 || !Array.isArray(data.libraryIds) ||
+        !Array.isArray(data.contentIds) || !data.contentIds.length || data.contentIds.length > 200 ||
+        data.contentIds.some((id) => typeof id !== 'string' || !id) ||
+        (data.description != null && (typeof data.description !== 'string' || data.description.length > 8000))) {
+        throw new AppError(400, 'Enter a collection name and select between 1 and 200 titles.');
+      }
+      const { libraryIds, items } = await customCatalog(data.libraryIds);
+      const catalog = new Map(items.map((item) => [item.content_id, item]));
+      const contentIds = [...new Set(data.contentIds)];
+      const members = contentIds.map((id) => catalog.get(id));
+      if (members.some((item) => !item)) throw new AppError(409, 'Some titles are no longer in the selected libraries.');
+      const result = await silo.publish({
+        detail: { provider: 'custom', id: JSON.stringify(contentIds) }, title, libraryIds, members,
+        description: data.description, poster: await selectedPoster(data),
+      });
+      return send(res, 201, result);
     }
     if (req.method === 'POST' && path === '/api/import') {
       const data = await body(req);
