@@ -17,8 +17,9 @@
     </nav>
   </header>
   <main class="workspace custom-workspace">
-    <section class="panel browse" aria-labelledby="custom-title">
-      <h1 id="custom-title">Custom collection</h1>
+    <h1>Custom collection</h1>
+    <section class="panel custom-panel" aria-labelledby="titles-heading">
+      <h2 id="titles-heading">Find titles</h2>
       <fieldset id="libraries"><legend>Silo libraries</legend>
         <p class="field-note">The collection will appear in the selected libraries.</p>
       </fieldset>
@@ -27,19 +28,38 @@
         <button disabled>Search</button>
       </form>
       <p id="search-status" role="status"></p>
-      <div id="results"></div>
+      <div id="results" class="custom-results"></div>
     </section>
-    <section class="panel work" aria-labelledby="details-title">
+    <section class="panel custom-panel" aria-labelledby="details-title">
       <h2 id="details-title">Collection details</h2>
       <form id="publish">
         <label class="field">Name<input name="title" required maxlength="150"></label>
         <label class="field">Description (optional)<textarea name="description" rows="3" maxlength="8000"></textarea></label>
-        <label class="field">Public HTTPS poster URL (optional)<input name="posterUrl" type="url" maxlength="2048"></label>
         <h3 id="selection-title">Selected titles</h3>
         <ol id="selected"></ol>
-        <button class="accent" disabled>Create in Silo</button>
-        <p id="publish-status" role="status"></p>
       </form>
+      <section class="custom-artwork" aria-labelledby="artwork-heading">
+        <h3 id="artwork-heading">Poster artwork</h3>
+        <div id="custom-poster-choice" class="custom-poster-choice" hidden>
+          <img id="custom-poster-image" alt="">
+          <div>
+            <p id="custom-poster-label"></p>
+            <button id="clear-custom-poster" type="button">Remove poster</button>
+          </div>
+        </div>
+        <label class="field">Poster source<select id="custom-poster-source"><option value="all">All creators</option></select></label>
+        <form id="custom-poster-search" class="search">
+          <input name="query" type="search" aria-label="Search collection posters" placeholder="Search collection posters" maxlength="150">
+          <button>Search</button>
+          <button type="button" id="browse-custom-posters">Browse all</button>
+        </form>
+        <p id="custom-poster-status" role="status"></p>
+        <div id="custom-posters" class="posters"></div>
+        <button type="button" id="more-custom-posters" hidden>Load more</button>
+        <label class="field">Public HTTPS poster URL (optional)<input form="publish" name="posterUrl" type="url" maxlength="2048" placeholder="https://…"></label>
+      </section>
+      <button class="accent" id="create-custom" form="publish" disabled>Create in Silo</button>
+      <p id="publish-status" role="status"></p>
     </section>
   </main>
 </body>
