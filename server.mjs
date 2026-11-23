@@ -239,8 +239,8 @@ const customTitle = (item) => ({
   id: item.content_id, title: item.title, year: item.year, type: item.type, libraryIds: item.previewLibraryIds,
 });
 
-async function matchMdbList(id) {
-  const members = await mdblist.members(id);
+async function matchMdbList(ids) {
+  const members = (await Promise.all(ids.map((id) => mdblist.members(id)))).flat();
   const libraries = (await silo.libraries()).filter(libraryKind);
   const { items } = await customCatalog(libraries.map((library) => library.id), libraries);
   const matches = new Map();
@@ -338,9 +338,11 @@ createServer(async (req, res) => {
         return send(res, 200, await mdblist.search(query));
       }
       if (path === '/api/mdblist-matches') {
-        const id = input.get('id');
-        if (!/^[1-9]\d{0,14}$/.test(id ?? '')) throw new AppError(400, 'Choose an MDBList search result.');
-        return send(res, 200, await matchMdbList(id));
+        const ids = [...new Set(input.getAll('id'))];
+        if (!ids.length || ids.length > 40 || ids.some((id) => !/^[1-9]\d{0,14}$/.test(id))) {
+          throw new AppError(400, 'Choose an MDBList search result.');
+        }
+        return send(res, 200, await matchMdbList(ids));
       }
       if (path === '/api/custom-titles') {
         const query = input.get('q')?.trim().toLowerCase();
