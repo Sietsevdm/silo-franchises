@@ -12,6 +12,9 @@ const bulkItems = document.querySelector('#custom-queue-items');
 const bulkStatus = document.querySelector('#custom-queue-status');
 const bulkPublish = document.querySelector('#publish-custom-queue');
 const selectResults = document.querySelector('#select-custom-results');
+const mdbSearch = document.querySelector('#mdblist-search');
+const mdbResults = document.querySelector('#mdblist-results');
+const mdbStatus = document.querySelector('#mdblist-status');
 const posterSearch = document.querySelector('#custom-poster-search');
 const posterSource = document.querySelector('#custom-poster-source');
 const posterResults = document.querySelector('#custom-posters');
@@ -30,6 +33,7 @@ let titleResults = [];
 let queue = readQueue();
 let editing;
 let librariesReady = false;
+let mdbVersion = 0;
 
 async function api(path, options) {
   const response = await fetch('/api/' + path, options);
@@ -213,6 +217,94 @@ selectResults.onclick = () => {
   renderSelection();
 };
 
+function showTitleResults(items) {
+  titleResults = items;
+  results.replaceChildren();
+  for (const item of items) {
+    const label = document.createElement('label');
+    label.className = 'check-line';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = item.id;
+    checkbox.onchange = () => {
+      if (checkbox.checked) picks.set(item.id, item);
+      else picks.delete(item.id);
+      renderSelection();
+    };
+    label.append(checkbox, itemLabel(item));
+    results.append(label);
+  }
+  renderSelection();
+}
+
+async function useMdbList(list) {
+  if (publishing || !librariesReady) return;
+  const version = ++mdbVersion;
+  const editorVersion = searchVersion;
+  mdbStatus.textContent = 'Matching “' + list.name + '” across your libraries…';
+  try {
+    const data = await api('mdblist-matches?' + new URLSearchParams({ id: list.id }));
+    if (version !== mdbVersion) return;
+    if (editorVersion !== searchVersion || publishing) {
+      mdbStatus.textContent = 'The editor changed during matching. Choose the list again to apply it.';
+      return;
+    }
+    if (!data.items.length) {
+      mdbStatus.textContent = 'No unambiguous matches found for “' + list.name + '”.';
+      return;
+    }
+    const librarySet = new Set(data.libraryIds);
+    for (const checkbox of libraries.querySelectorAll('input')) checkbox.checked = librarySet.has(checkbox.value);
+    libraries.dispatchEvent(new Event('change'));
+    picks.clear();
+    for (const item of data.items.slice(0, 200)) picks.set(item.id, item);
+    showTitleResults(data.items);
+    if (!publish.elements.title.value.trim()) publish.elements.title.value = list.name.slice(0, 150);
+    posterSearch.elements.query.value = list.name.slice(0, 150);
+    searchPosters();
+    mdbStatus.textContent = 'Matched ' + data.matched + ' of ' + data.total + ' list entries in ' + data.libraryIds.length + ' libraries.';
+    searchStatus.textContent = data.items.length > 200
+      ? 'Selected the first 200 matching titles. Deselect titles to choose others from the results below.'
+      : 'Selected ' + data.items.length + ' matching titles.';
+  } catch (error) {
+    if (version === mdbVersion) mdbStatus.textContent = error.message;
+  }
+}
+
+mdbSearch.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const query = mdbSearch.elements.query.value.trim();
+  if (!query) return;
+  const version = ++mdbVersion;
+  mdbResults.replaceChildren();
+  mdbStatus.textContent = 'Searching MDBList…';
+  try {
+    const lists = await api('mdblist-search?' + new URLSearchParams({ q: query }));
+    if (version !== mdbVersion) return;
+    for (const list of lists) {
+      const row = document.createElement('div');
+      row.className = 'custom-selected-row';
+      const label = document.createElement('span');
+      label.className = 'custom-selected-label';
+      label.textContent = list.name;
+      const meta = document.createElement('small');
+      meta.className = 'custom-title-meta';
+      meta.textContent = [list.owner, Number.isFinite(list.count) ? list.count + ' entries' : ''].filter(Boolean).join(' · ');
+      label.append(meta);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Use list';
+      button.setAttribute('aria-label', 'Use list ' + list.name);
+      button.onclick = () => void useMdbList(list);
+      row.append(label, button);
+      mdbResults.append(row);
+    }
+    mdbStatus.textContent = lists.length ? 'Choose a list to replace the selected libraries and titles with its matches.' : 'No public lists found.';
+  } catch (error) {
+    if (version === mdbVersion) mdbStatus.textContent = error.message;
+  }
+});
+
 search.addEventListener('submit', async (event) => {
   event.preventDefault();
   const query = search.elements.query.value.trim();
@@ -229,25 +321,10 @@ search.addEventListener('submit', async (event) => {
   try {
     const data = await api('custom-titles?' + params);
     if (version !== searchVersion) return;
-    titleResults = data.items;
-    for (const item of data.items) {
-      const label = document.createElement('label');
-      label.className = 'check-line';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.value = item.id;
-      checkbox.onchange = () => {
-        if (checkbox.checked) picks.set(item.id, item);
-        else picks.delete(item.id);
-        renderSelection();
-      };
-      label.append(checkbox, itemLabel(item));
-      results.append(label);
-    }
+    showTitleResults(data.items);
     searchStatus.textContent = data.total > data.items.length
       ? 'Showing the first 50 matches. Narrow your search to see other titles.'
       : data.total ? data.total + ' matching title(s).' : 'No matching titles.';
-    renderSelection();
   } catch (error) {
     if (version === searchVersion) searchStatus.textContent = error.message;
   }
@@ -258,7 +335,7 @@ function collectionPayload() {
   fields.title = fields.title.trim();
   if (!fields.title) throw new Error('Enter a collection name.');
   const ids = libraryIds();
-  if (!ids.length || ids.length > 20) throw new Error('Select between 1 and 20 libraries.');
+  if (!ids.length) throw new Error('Select at least one library.');
   if (!fields.posterUrl.trim()) delete fields.posterUrl;
   if (selectedPoster) {
     fields.posterId = selectedPoster.id;
@@ -268,6 +345,7 @@ function collectionPayload() {
 }
 
 function clearEditor() {
+  searchVersion++;
   editing = undefined;
   publish.reset();
   choosePoster();
