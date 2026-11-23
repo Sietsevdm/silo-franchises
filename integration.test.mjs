@@ -19,6 +19,13 @@ test('MDBList searches public lists and reads mixed titles across pages', async 
       assert.equal(url.searchParams.get('query'), 'Family films');
       return Response.json([{ id: 42, name: 'Family films', user_name: 'example', items: 2 }]);
     }
+    if (url.pathname === '/lists/theimmortal68/star-trek') {
+      assert.equal(url.searchParams.has('query'), false);
+      return Response.json([
+        { id: 42, name: 'Star Trek', user_name: 'theimmortal68', items: 2 },
+        { id: 43, name: 'Star Trek', user_name: 'theimmortal68', items: 3 },
+      ]);
+    }
     assert.equal(url.pathname, '/lists/42/items');
     assert.equal(url.searchParams.get('unified'), 'true');
     const offset = url.searchParams.get('offset');
@@ -29,6 +36,10 @@ test('MDBList searches public lists and reads mixed titles across pages', async 
   });
   const client = mdblistClient('example-key');
   assert.deepEqual(await client.search('Family films'), [{ id: 42, name: 'Family films', owner: 'example', count: 2 }]);
+  assert.deepEqual(await client.search('https://mdblist.com/lists/theimmortal68/star-trek'), [
+    { id: 42, ids: [42, 43], name: 'Star Trek', owner: 'theimmortal68', count: 5 },
+  ]);
+  await assert.rejects(client.search('https://example.org/lists/theimmortal68/star-trek'), { status: 400 });
   const members = await client.members(42);
   assert.deepEqual(offsets, ['0', '1000']);
   assert.deepEqual(members.map(({ type, tmdb, tvdb }) => [type, tmdb, tvdb]), [['movie', 11, undefined], ['series', 33, 22]]);
