@@ -81,7 +81,7 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
   const prefix = root.href.replace(/\/$/, '') + '/api/v2';
   let readQueue = Promise.resolve();
   let nextRead = 0;
-  const read = async (send) => {
+  const pacedRequest = async (send) => {
     const deadline = Date.now() + 20_000;
     for (let attempt = 0; ; attempt++) {
       const scheduled = readQueue.then(async () => {
@@ -107,9 +107,9 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
   };
   function limited(until) {
     const seconds = Math.max(1, Math.ceil((until - Date.now()) / 1000));
-    return new AppError(429, `Silo is limiting catalog requests. Wait about ${seconds} second${seconds === 1 ? '' : 's'}, then try the preview again.`, String(seconds));
+    return new AppError(429, `Silo is limiting requests. Wait about ${seconds} second${seconds === 1 ? '' : 's'} before retrying.`, String(seconds));
   }
-  const call = async (path, { method = 'GET', body, etag, withTag = false, mediaRequest = false } = {}) => {
+  const call = async (path, { method = 'GET', body, etag, withTag = false, mediaRequest = false, paced = false } = {}) => {
     const credential = mediaRequest ? requestKey || token : token;
     if (!credential) throw new AppError(503, 'Set SILO_API_KEY in the stack to connect to Silo.');
     const headers = { Authorization: `Bearer ${credential}`, Accept: 'application/json' };
@@ -120,7 +120,7 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
       body = JSON.stringify(body);
     }
     const send = () => request(prefix + path, { method, headers, body }, 'Silo');
-    const response = method === 'GET' ? await read(send) : await send();
+    const response = method === 'GET' || paced ? await pacedRequest(send) : await send();
     if (response.status === 204) return null;
     const value = await response.json();
     return withTag ? { value, etag: response.headers.get('etag') } : value;
@@ -375,10 +375,11 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
       const form = poster ? await prepareArtwork(poster.image, 'Poster artwork', poster.custom) : null;
       const customForm = customBackdrop ? await prepareArtwork(backdrop, 'Backdrop', true) : null;
       collection = await existingImport(title, libraryIds, slug);
+      const resuming = Boolean(collection);
       if (!collection) {
         const syncedSource = sync ? { collection_type: 'tmdb', source_url: `tmdb://collection/${detail.id}`,
           source_config: { mode: 'tmdb_collection', collection_id: Number(detail.id) }, sync_schedule: '0 4 * * *' } : null;
-        collection = await call(collectionsPath, { method: 'POST', body: {
+        collection = await call(collectionsPath, { method: 'POST', paced: true, body: {
           title, slug, library_ids: libraryIds, collection_type: 'manual', source_url: detail.url, description, sort_config: sortConfig(sort),
           ...syncedSource,
         } });
@@ -386,21 +387,23 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
       if (!collection?.id) throw new AppError(502, 'Silo did not return the new collection ID.');
       const path = collectionPath(collection.id);
       if (!sync) {
+        const existing = resuming ? await collectionMemberIds(collection.id) : new Set();
         for (const [position, item] of members.entries()) {
-          await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', body: { position } });
+          if (existing.has(item.content_id)) continue;
+          await call(`${path}/items/${encodeURIComponent(item.content_id)}`, { method: 'PUT', paced: true, body: { position } });
         }
       }
-      if (form) await call(path + '/poster', { method: 'PUT', body: form });
+      if (form) await call(path + '/poster', { method: 'PUT', paced: true, body: form });
       let warning;
       if (backdrop) {
         try {
           const wideArtwork = customForm ?? await prepareArtwork(backdrop, 'TMDb backdrop');
-          await call(path + '/backdrop', { method: 'PUT', body: wideArtwork });
+          await call(path + '/backdrop', { method: 'PUT', paced: true, body: wideArtwork });
         } catch { warning = 'The collection was saved, but its backdrop could not be uploaded.'; }
       }
       if (sync) {
         try {
-          const status = await call(path + '/sync', { method: 'POST' });
+          const status = await call(path + '/sync', { method: 'POST', paced: true });
           const syncState = status?.sync_run?.status ?? status?.status;
           if (['failed', 'error'].includes(syncState)) throw new Error('Sync failed');
         } catch { warning = [warning, 'The TMDb-synced collection was saved, but its first sync failed. Check the TMDb setup in Silo.'].filter(Boolean).join(' '); }
@@ -410,7 +413,7 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
       return warning ? { ...result, warning } : result;
     } catch (error) {
       if (collection?.id) {
-        throw new AppError(error.status ?? 502, `Silo collection ${collection.id} exists. ${error instanceof AppError ? error.message : 'Import was interrupted.'} Retry with the same title and libraries to resume.`);
+        throw new AppError(error.status ?? 502, `Silo saved collection ${collection.id}, but the import did not finish. ${error instanceof AppError ? error.message : ''} Retry with the same title, libraries, and selected titles to resume.`, error.retryAfter);
       }
       throw error;
     } finally {

@@ -232,6 +232,9 @@ test('creates a manual collection and resumes after an interrupted artwork uploa
       members.push(JSON.parse(options.body).position);
       return new Response(null, { status: 204 });
     }
+    if (path === '/api/v2/admin/collections/test/items' && options.method === 'GET') {
+      return Response.json({ items: [{ media_item_id: 'm1', position: 0 }] });
+    }
     if (path === '/api/v2/admin/collections/test/poster') {
       assert.equal(options.method, 'PUT');
       assert.equal(options.body.get('image').type, 'image/jpeg');
@@ -244,19 +247,24 @@ test('creates a manual collection and resumes after an interrupted artwork uploa
   const data = { detail: { provider: 'tmdb', id: '10', url: 'https://www.themoviedb.org/collection/10' },
     title: 'Example', libraryIds: ['1'], members: [{ content_id: 'm1' }],
     poster: { image: 'https://images.theposterdb.com/example.jpg' } };
-  await assert.rejects(silo.publish(data), /collection test exists.*Retry/i);
+  await assert.rejects(silo.publish(data), /saved collection test.*Retry/i);
   assert.deepEqual(await silo.publish(data), { id: 'test', title: 'Example', added: 1 });
   assert.equal(creates, 1);
-  assert.deepEqual(members, [0, 0]);
+  assert.deepEqual(members, [0]);
 });
 
 test('publishes one custom collection with members from different libraries and no poster', async (t) => {
   const writes = [];
+  let rateLimited = false;
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     const path = new URL(url).pathname;
     if (options.method === 'GET') {
       assert.equal(path, '/api/v2/admin/collections');
       return Response.json({ items: [] });
+    }
+    if (path.endsWith('/items/4k-movie') && !rateLimited) {
+      rateLimited = true;
+      return new Response(null, { status: 429, headers: { 'Retry-After': '0' } });
     }
     writes.push([options.method, path, JSON.parse(options.body)]);
     return options.method === 'POST'
@@ -273,6 +281,7 @@ test('publishes one custom collection with members from different libraries and 
   assert.deepEqual(result, { id: 'custom-1', title: 'Family Favorites', added: 2 });
   const [create, first, second] = writes;
   assert.equal(writes.length, 3);
+  assert.equal(rateLimited, true);
   assert.deepEqual(create.slice(0, 2), ['POST', '/api/v2/admin/collections']);
   assert.equal(create[2].collection_type, 'manual');
   assert.deepEqual(create[2].library_ids, ['kids', '4k']);
