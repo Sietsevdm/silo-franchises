@@ -215,6 +215,36 @@ test('creates a manual collection and resumes after an interrupted artwork uploa
   assert.deepEqual(members, [0, 0]);
 });
 
+test('publishes one custom collection with members from different libraries and no poster', async (t) => {
+  const writes = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const path = new URL(url).pathname;
+    if (options.method === 'GET') {
+      assert.equal(path, '/api/v2/admin/collections');
+      return Response.json({ items: [] });
+    }
+    writes.push([options.method, path, JSON.parse(options.body)]);
+    return options.method === 'POST'
+      ? Response.json({ id: 'custom-1', ...JSON.parse(options.body) }, { status: 201 })
+      : new Response(null, { status: 204 });
+  });
+  const silo = siloClient('https://silo.example', 'fake');
+  const result = await silo.publish({
+    detail: { provider: 'custom', id: 'example' },
+    title: 'Family Favorites',
+    libraryIds: ['kids', '4k'],
+    members: [{ content_id: 'kids-movie' }, { content_id: '4k-movie' }],
+  });
+  assert.deepEqual(result, { id: 'custom-1', title: 'Family Favorites', added: 2 });
+  const [create, first, second] = writes;
+  assert.equal(writes.length, 3);
+  assert.deepEqual(create.slice(0, 2), ['POST', '/api/v2/admin/collections']);
+  assert.equal(create[2].collection_type, 'manual');
+  assert.deepEqual(create[2].library_ids, ['kids', '4k']);
+  assert.deepEqual(first, ['PUT', '/api/v2/admin/collections/custom-1/items/kids-movie', { position: 0 }]);
+  assert.deepEqual(second, ['PUT', '/api/v2/admin/collections/custom-1/items/4k-movie', { position: 1 }]);
+});
+
 test('editing uses the selected collection and rejects stale data before patching', async (t) => {
   let writes = 0;
   t.mock.method(globalThis, 'fetch', async (url, options) => {
