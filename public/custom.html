@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Custom Collection · Silo Franchises</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/custom.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a href="/movies" class="brand"><span aria-hidden="true">S</span> Silo Franchises</a>
+    <nav aria-label="Franchise pages">
+      <a href="/movies">Movies</a><a href="/tv">TV</a>
+      <a href="/custom" aria-current="page">Custom collection</a>
+      <a href="/bulk/movies">Bulk queue</a><a href="/settings">Settings</a>
+    </nav>
+  </header>
+  <main class="workspace custom-workspace">
+    <section class="panel browse" aria-labelledby="custom-title">
+      <h1 id="custom-title">Custom collection</h1>
+      <fieldset id="libraries"><legend>Silo libraries</legend>
+        <p class="field-note">The collection will appear in the selected libraries.</p>
+      </fieldset>
+      <form id="search" class="search">
+        <input name="query" type="search" aria-label="Search movie and TV titles" placeholder="Search titles" maxlength="150" required>
+        <button disabled>Search</button>
+      </form>
+      <p id="search-status" role="status"></p>
+      <div id="results"></div>
+    </section>
+    <section class="panel work" aria-labelledby="details-title">
+      <h2 id="details-title">Collection details</h2>
+      <form id="publish">
+        <label class="field">Name<input name="title" required maxlength="150"></label>
+        <label class="field">Description (optional)<textarea name="description" rows="3" maxlength="8000"></textarea></label>
+        <label class="field">Public HTTPS poster URL (optional)<input name="posterUrl" type="url" maxlength="2048"></label>
+        <h3 id="selection-title">Selected titles</h3>
+        <ol id="selected"></ol>
+        <button class="accent" disabled>Create in Silo</button>
+        <p id="publish-status" role="status"></p>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
