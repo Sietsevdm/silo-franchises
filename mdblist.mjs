@@ -19,10 +19,22 @@ export function mdblistClient(apiKey) {
   }
 
   async function search(query) {
-    const { data } = await get('/lists/search', { query });
+    let listPath;
+    if (/^https?:\/\//i.test(query)) {
+      const link = URL.parse(query);
+      const match = link?.pathname.match(/^\/lists\/([\w-]+)\/([\w-]+)\/?$/);
+      if (!match || !['mdblist.com', 'www.mdblist.com'].includes(link.hostname) ||
+        link.username || link.password || link.port) {
+        throw new AppError(400, 'Paste an MDBList list link or enter a list name.');
+      }
+      listPath = '/lists/' + match[1] + '/' + match[2];
+    }
+    const { data } = await (listPath ? get(listPath) : get('/lists/search', { query }));
     if (!Array.isArray(data)) throw new AppError(502, 'MDBList returned an unexpected search response.');
-    return data.filter((list) => Number.isSafeInteger(list.id) && list.id > 0 && typeof list.name === 'string')
+    const lists = data.filter((list) => Number.isSafeInteger(list?.id) && list.id > 0 && typeof list.name === 'string')
       .slice(0, 40).map((list) => ({ id: list.id, name: list.name, owner: list.user_name, count: list.items }));
+    if (!listPath || lists.length < 2) return lists;
+    return [{ ...lists[0], ids: lists.map(({ id }) => id), count: lists.reduce((sum, list) => sum + (Number(list.count) || 0), 0) }];
   }
 
   async function members(id) {
