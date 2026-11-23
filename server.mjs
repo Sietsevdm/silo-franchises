@@ -264,6 +264,34 @@ async function matchMdbList(ids) {
   };
 }
 
+const mdbMatches = new Map();
+function mdbMatchJob(ids, polling) {
+  const key = ids.join(',');
+  const now = Date.now();
+  for (const [id, job] of mdbMatches) {
+    if (job.expires <= now) mdbMatches.delete(id);
+  }
+  const previous = mdbMatches.get(key);
+  if (polling || (previous && !previous.error)) {
+    if (!previous) throw new AppError(410, 'The list preview expired. Choose Use list again.');
+    return previous;
+  }
+  if (mdbMatches.size >= 32 || [...mdbMatches.values()].filter((job) => job.pending).length >= 4) {
+    throw new AppError(429, 'Other lists are being matched. Try again shortly.');
+  }
+  const job = { pending: true, expires: Infinity };
+  mdbMatches.set(key, job);
+  void matchMdbList(ids).then((result) => {
+    job.result = result;
+  }, (error) => {
+    job.error = error;
+  }).finally(() => {
+    job.pending = false;
+    job.expires = Date.now() + 120_000;
+  });
+  return job;
+}
+
 async function selectedBackdrop(data) {
   if (data.kind === 'series' && data.backdropUrl != null) {
     if (typeof data.backdropUrl !== 'string' || data.backdropUrl.length > 2048) throw new AppError(400, 'Enter a direct public HTTPS image URL.');
@@ -342,7 +370,10 @@ createServer(async (req, res) => {
         if (!ids.length || ids.length > 40 || ids.some((id) => !/^[1-9]\d{0,14}$/.test(id))) {
           throw new AppError(400, 'Choose an MDBList search result.');
         }
-        return send(res, 200, await matchMdbList(ids));
+        const job = mdbMatchJob(ids, input.get('poll') === '1');
+        if (job.pending) return send(res, 202, { pending: true });
+        if (job.error) throw job.error;
+        return send(res, 200, job.result);
       }
       if (path === '/api/custom-titles') {
         const query = input.get('q')?.trim().toLowerCase();
