@@ -37,7 +37,12 @@ let mdbVersion = 0;
 
 async function api(path, options) {
   const response = await fetch('/api/' + path, options);
-  const data = await response.json();
+  const data = await response.json().catch(() => {
+    const message = response.status === 504 || response.status === 524
+      ? 'The server took too long to respond. Try again shortly.'
+      : 'The server returned an unexpected response (HTTP ' + response.status + ').';
+    throw Object.assign(new Error(message), { status: response.status });
+  });
   if (!response.ok) throw Object.assign(new Error(data.error || 'The request failed.'), { status: response.status });
   return data;
 }
@@ -245,7 +250,15 @@ async function useMdbList(list) {
   try {
     const params = new URLSearchParams();
     for (const id of list.ids ?? [list.id]) params.append('id', id);
-    const data = await api('mdblist-matches?' + params);
+    let data = await api('mdblist-matches?' + params);
+    params.set('poll', '1');
+    const deadline = Date.now() + 10 * 60_000;
+    while (data.pending && version === mdbVersion && editorVersion === searchVersion && !publishing) {
+      if (Date.now() >= deadline) throw new Error('Matching is still running. Choose Use list again to check its progress.');
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (version !== mdbVersion || editorVersion !== searchVersion || publishing) break;
+      data = await api('mdblist-matches?' + params);
+    }
     if (version !== mdbVersion) return;
     if (editorVersion !== searchVersion || publishing) {
       mdbStatus.textContent = 'The editor changed during matching. Choose the list again to apply it.';
