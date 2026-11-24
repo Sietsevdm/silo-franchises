@@ -54,6 +54,17 @@
           <button id="sort-collections" type="button">Sort collections A–Z in Silo</button>
           <p class="field-note">Sorts collections within each group in the chosen library.</p>
           <p id="order-status" role="status"></p>
+          <details id="collection-sort-exclusions">
+            <summary>Exclude collections from release-date sorting</summary>
+            <fieldset id="collection-sort-exclusion-list" hidden>
+              <legend>Collections to skip</legend>
+            </fieldset>
+            <button id="save-collection-sort-exclusions" type="button" disabled>Save exclusions</button>
+            <p id="collection-sort-exclusion-status" role="status"></p>
+          </details>
+          <button id="sort-collection-media" type="button">Sort movies and shows inside collections by release date</button>
+          <p class="field-note">Sets oldest first in every Silo server collection outside your saved exclusions.</p>
+          <p id="media-order-status" role="status"></p>
         </details>
         <details id="collection-health" hidden>
           <summary>Collection health</summary>

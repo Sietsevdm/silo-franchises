@@ -196,6 +196,32 @@ test('Silo collection ordering updates group order only and skips incomplete ord
   assert.deepEqual(writes, [{ library_id: '1', group_id: null, ordered_ids: ['a', 'z'] }]);
 });
 
+test('bulk release-date sorting updates only collection sort settings and reports conflicts', async (t) => {
+  const writes = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/collections')) return Response.json({ items: [
+      { id: 'movies', title: 'Movies' },
+      { id: 'sorted', title: 'Sorted', sort_config: { field: 'release_date', order: 'asc' } },
+      { id: 'tv', title: 'TV' },
+      { id: 'excluded', title: 'Excluded' },
+    ] });
+    assert.ok(!path.endsWith('/excluded'));
+    if (options.method === 'GET') return Response.json({ sort_config: { field: 'title', order: 'asc' } },
+      { headers: { ETag: '"original"' } });
+    assert.equal(options.method, 'PATCH');
+    assert.equal(options.headers['If-Match'], '"original"');
+    writes.push([path.split('/').at(-1), JSON.parse(options.body)]);
+    return path.endsWith('/tv') ? new Response(null, { status: 412 }) : Response.json({});
+  });
+  const result = await siloClient('https://silo.example', 'fake').sortCollectionMediaByReleaseDate(['excluded']);
+  assert.equal(result.changed, 1);
+  assert.equal(result.unchanged, 1);
+  assert.equal(result.excluded, 1);
+  assert.deepEqual(result.failed.map(({ title }) => title), ['TV']);
+  assert.deepEqual(writes, ['movies', 'tv'].map((id) => [id, { sort_config: { field: 'release_date', order: 'asc' } }]));
+});
+
 test('import planning detects title collisions without writing collections', async (t) => {
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     assert.equal(options.method, 'GET');

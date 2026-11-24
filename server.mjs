@@ -385,6 +385,9 @@ createServer(async (req, res) => {
         return send(res, 200, { total: matches.length, items: matches.slice(0, 50).map(customTitle) });
       }
       if (path === '/api/collections') return send(res, 200, (await silo.collections()).map(publicCollection));
+      if (path === '/api/collection-sort-exclusions') {
+        return send(res, 200, await state.get('settings', 'collection-sort-exclusions') ?? []);
+      }
       if (path === '/api/drafts') return send(res, 200, await state.get('drafts', queueKind(input.get('kind'))) ?? { revision: 0 });
       if (path === '/api/hidden-franchises') return send(res, 200, await state.get('hidden', queueKind(input.get('kind'))) ?? []);
       if (path === '/api/collection') {
@@ -580,6 +583,18 @@ createServer(async (req, res) => {
       const library = libraries.find((item) => item.id === data.libraryId && selectedLibraryKind(item, settings?.libraryIds) === data.kind);
       if (!library) throw new AppError(400, 'Choose an eligible Silo library.');
       return send(res, 200, await silo.sortCollections(library.id));
+    }
+    if (req.method === 'POST' && path === '/api/collection-sort-exclusions') {
+      const { excludedIds } = await body(req, 256_000);
+      if (!Array.isArray(excludedIds) || excludedIds.some((id) => typeof id !== 'string' || !id.trim())) {
+        throw new AppError(400, 'Choose valid collection IDs.');
+      }
+      return send(res, 200, await state.update('settings', 'collection-sort-exclusions', () => [...new Set(excludedIds)]));
+    }
+    if (req.method === 'POST' && path === '/api/sort-collection-media') {
+      await body(req);
+      const excludedIds = await state.get('settings', 'collection-sort-exclusions') ?? [];
+      return send(res, 200, await silo.sortCollectionMediaByReleaseDate(excludedIds));
     }
     if (req.method === 'POST' && path === '/api/poster-preview') {
       const data = await body(req);

@@ -737,6 +737,57 @@ el('sort-collections').onclick = async () => {
   finally { button.disabled = false; }
 };
 
+const exclusionPanel = el('collection-sort-exclusions');
+const exclusionList = el('collection-sort-exclusion-list');
+const saveExclusions = el('save-collection-sort-exclusions');
+const sortMedia = el('sort-collection-media');
+let loadingExclusions = false;
+exclusionPanel.ontoggle = async () => {
+  if (!exclusionPanel.open || !exclusionList.hidden || loadingExclusions) return;
+  loadingExclusions = true;
+  status('collection-sort-exclusion-status', 'Loading Silo collections…');
+  try {
+    const [collections, excludedIds] = await Promise.all([api('collections'), api('collection-sort-exclusions')]);
+    const excluded = new Set(excludedIds);
+    for (const { id, title } of collections.sort((a, b) => sortedTitles.compare(a.title, b.title))) {
+      const label = create('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = id;
+      checkbox.checked = excluded.has(id);
+      label.append(checkbox, document.createTextNode(title));
+      exclusionList.append(label);
+    }
+    exclusionList.hidden = !collections.length;
+    saveExclusions.disabled = sortMedia.disabled || !collections.length;
+    status('collection-sort-exclusion-status', collections.length ? '' : 'No Silo collections found.');
+  } catch (error) { status('collection-sort-exclusion-status', error.message); }
+  finally { loadingExclusions = false; }
+};
+saveExclusions.onclick = async () => {
+  saveExclusions.disabled = sortMedia.disabled = exclusionList.disabled = true;
+  try {
+    await post('collection-sort-exclusions', { excludedIds: checked(exclusionList.id) });
+    status('collection-sort-exclusion-status', 'Exclusions saved.');
+  } catch (error) { status('collection-sort-exclusion-status', error.message); }
+  finally { saveExclusions.disabled = sortMedia.disabled = exclusionList.disabled = false; }
+};
+
+sortMedia.onclick = async () => {
+  sortMedia.disabled = saveExclusions.disabled = true;
+  status('media-order-status', 'Sorting movies and shows inside Silo collections…');
+  try {
+    const { changed, unchanged, excluded, failed } = await post('sort-collection-media', {});
+    const summary = `Updated ${changed} collections. Already sorted: ${unchanged}. Excluded: ${excluded}.`;
+    const problems = failed.map(({ title, reason }) => `${title} (${reason})`).join(', ');
+    status('media-order-status', failed.length ? `${summary} Failed: ${problems}` : summary);
+  } catch (error) { status('media-order-status', error.message); }
+  finally {
+    sortMedia.disabled = false;
+    saveExclusions.disabled = exclusionList.hidden;
+  }
+};
+
 function closeManualMatch() {
   state.manualMatch = null;
   el('manual-match').hidden = true;

@@ -208,6 +208,37 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
   const collections = async () => (await call(collectionsPath)).items;
   const collectionPath = (id) => `${collectionsPath}/${encodeURIComponent(id)}`;
   const getCollection = (id) => call(collectionPath(id), { withTag: true });
+  async function sortCollectionMediaByReleaseDate(excludedIds = []) {
+    const excluded = new Set(excludedIds);
+    const sort = { field: 'release_date', order: 'asc' };
+    const isSorted = (collection) => collection.sort_config?.field === sort.field &&
+      collection.sort_config?.order === sort.order;
+    const report = { changed: 0, unchanged: 0, excluded: 0, failed: [] };
+    for (const collection of await collections()) {
+      if (excluded.has(collection.id)) {
+        report.excluded++;
+        continue;
+      }
+      if (isSorted(collection)) {
+        report.unchanged++;
+        continue;
+      }
+      try {
+        const { value, etag } = await getCollection(collection.id);
+        if (isSorted(value)) {
+          report.unchanged++;
+          continue;
+        }
+        if (!etag) throw new AppError(502, 'Silo did not return a collection revision.');
+        await call(collectionPath(collection.id), { method: 'PATCH', etag,
+          body: { sort_config: { ...value.sort_config, ...sort } } });
+        report.changed++;
+      } catch (error) {
+        report.failed.push({ title: collection.title, reason: error.message });
+      }
+    }
+    return report;
+  }
   async function collectionMembership(id) {
     const members = new Map();
     const cursors = new Set();
@@ -421,5 +452,5 @@ export function siloClient(base, token, { requestKey, requestProfileId } = {}) {
     }
   }
   return { libraries, catalog, publish, planImport, collections, getCollection, collectionMemberIds, appendAvailable,
-    updateCollection, restoreCollection, sortCollections, requestMissingMedia, mediaRequestStatus };
+    updateCollection, restoreCollection, sortCollections, sortCollectionMediaByReleaseDate, requestMissingMedia, mediaRequestStatus };
 }
